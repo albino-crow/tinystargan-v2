@@ -33,7 +33,7 @@ def main(args):
         ckptios.load(args.generator_iter)
 
         style_codes = create_fixed_domain_style_codes(
-            nets_ema.mapping_network, args.num_domains, args.latent_dim
+            nets_ema.mapping_network, args.num_domains, args.latent_dim, seed=args.seed
         )
         generator = StarGanV2Generator(
             nets_ema.generator, output_dim=args.backbone_img_size
