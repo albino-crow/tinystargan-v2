@@ -40,9 +40,7 @@ def main(args):
         style_codes = create_fixed_domain_style_codes(
             nets_ema.mapping_network, args.num_domains, args.latent_dim, seed=args.seed
         )
-        generator = StarGanV2Generator(
-            nets_ema.generator, output_dim=args.backbone_img_size
-        )
+        generator = StarGanV2Generator(nets_ema.generator)
     elif args.mode == "tiny":
         _, nets_ema = build_model(args)
         ckptios = CheckpointIO(
@@ -53,15 +51,14 @@ def main(args):
         style_codes = create_fixed_domain_style_codes(
             nets_ema.mapping_network, args.num_domains, args.latent_dim, seed=args.seed
         )
-        generator = StarGanV2Generator(
-            nets_ema.generator, output_dim=args.backbone_img_size
-        )
+        generator = StarGanV2Generator(nets_ema.generator)
     pipeline = Pipeline(
         generator=generator,
         style_codes=style_codes if style_codes is not None else {},
         number_domain=args.num_domains,
         feature_extractor=FlexibleClassifier(backbone, num_classes=args.num_labels),
         fast_forward=(args.mode == "forward"),
+        backbone_input_size=args.backbone_img_size,
         mix_up=args.mix_up,
         mix_up_start=args.mix_up_start,
         mix_up_end=args.mix_up_end,
