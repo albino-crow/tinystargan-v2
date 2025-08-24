@@ -194,6 +194,7 @@ class Trainer:
         model,
         train_loader,
         val_loader,
+        test_loader,
         criterion,
         optimizer,
         device,
@@ -216,6 +217,7 @@ class Trainer:
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
+        self.test_loader = test_loader
         self.criterion = criterion
         self.optimizer = optimizer
         self.device = device
@@ -367,6 +369,7 @@ class Trainer:
 
             # Validation phase
             val_loss, val_acc = self.validate_epoch(epoch, num_epochs)
+            test_loss, test_acc = self.test()
 
             # Update history
             self.train_history["train_loss"].append(train_loss)
@@ -385,6 +388,7 @@ class Trainer:
             print(f"\nEpoch {epoch + 1} Summary:")
             print(f"Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
             print(f"Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
+            print(f"cheat test - Loss: {test_loss:.4f}, Acc: {test_acc:.4f}")
             print(
                 f"Best Val Acc so far: {self.best_val_acc:.4f} (Epoch {self.best_epoch})"
             )
@@ -402,7 +406,7 @@ class Trainer:
 
         return self.train_history
 
-    def test(self, test_loader):
+    def test(self):
         """
         Test the current model.
 
@@ -413,9 +417,9 @@ class Trainer:
             test_loss: Test loss
             test_acc: Test accuracy
         """
-        return test_model(self.model, test_loader, self.criterion, self.device)
+        return test_model(self.model, self.test_loader, self.criterion, self.device)
 
-    def test_best_model(self, test_loader):
+    def test_best_model(self):
         """
         Test the best saved model.
 
@@ -435,7 +439,7 @@ class Trainer:
         # Load best model
         if self.load_best_model():
             # Test best model
-            test_loss, test_acc = self.test(test_loader)
+            test_loss, test_acc = self.test()
 
             # Restore current model state
             self.model.load_state_dict(current_state["model"])
@@ -444,7 +448,7 @@ class Trainer:
             return test_loss, test_acc
         else:
             print("No best model found, testing current model instead")
-            return self.test(test_loader)
+            return self.test()
 
     def get_training_summary(self):
         """Get a summary of the training process."""

@@ -91,14 +91,15 @@ def main(args):
         model=pipeline,
         train_loader=train_loader,
         val_loader=valid_loader,
+        test_loader=test_loader,
         criterion=criterion,
         optimizer=optimizer,
         device=device,
         save_every_n_epochs=args.save_every,
         checkpoint_dir=args.checkpoint_dir,
+        
     )
     trainer.train(num_epochs=args.total_epoch, resume_epoch=args.resume_iter)
-    trainer.test(test_loader)
 
 
 if __name__ == "__main__":
