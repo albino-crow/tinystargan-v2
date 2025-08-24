@@ -19,7 +19,6 @@ class RobustImageFolder(datasets.ImageFolder):
 
     def _validate_and_filter_samples(self):
         """Pre-validate all samples and remove corrupted ones"""
-        print(f"Validating {len(self.samples)} images...")
         valid_samples = []
         corrupted_count = 0
 

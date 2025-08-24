@@ -84,7 +84,6 @@ class StarGanV2Generator(nn.Module):
         mapping_network=None,
         fan=None,
         generator_only_gpu=False,
-        output_dim=None,
         w_hpf=0,
     ):
         """
@@ -101,18 +100,8 @@ class StarGanV2Generator(nn.Module):
         super().__init__()
         self.generator_only_gpu = generator_only_gpu
         self.w_hpf = w_hpf
-        self.output_dim = output_dim
 
         # Initialize resize transform if output_dim is specified
-        self.resize_transform = (
-            None
-            if output_dim is None
-            else transforms.Resize(
-                (output_dim, output_dim),
-                interpolation=transforms.InterpolationMode.BILINEAR,
-                antialias=True,
-            )
-        )
 
         if generator_only_gpu:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -173,12 +162,8 @@ class StarGanV2Generator(nn.Module):
 
         fake_images = (fake_images + 1.0) / 2.0
 
-        if self.resize_transform is not None:
-            if self.output_dim != fake_images.size(2):
-                fake_images = self.resize_transform(fake_images)
-
-            # Keep in [0, 1] range for pretrained models (DINO, ResNet, etc.)
-            # Most pretrained models expect inputs in [0, 1] range, not [-1, 1]
+        # Keep in [0, 1] range for pretrained models (DINO, ResNet, etc.)
+        # Most pretrained models expect inputs in [0, 1] range, not [-1, 1]
 
         return fake_images
 
@@ -190,6 +175,11 @@ class Pipeline(nn.Module):
         style_codes,
         number_domain,
         feature_extractor,
+        backbone_input_size,
+        mix_up=False,
+        mix_up_start=0.0,
+        mix_up_end=1.0,
+        mix_up_growth=0.0001,
         fast_forward=False,
     ):
         super().__init__()
@@ -201,6 +191,23 @@ class Pipeline(nn.Module):
         self.feature_extractor = feature_extractor
         self.fast_forward = fast_forward
 
+        self.backbone_input_size = backbone_input_size
+        self.mix_up = mix_up
+        self.mix_up_start = mix_up_start
+        self.mix_up_end = mix_up_end
+        self.mix_up_growth = mix_up_growth
+        self.mix_up_current = 0
+
+        self.resize_transform = (
+            None
+            if backbone_input_size is None
+            else transforms.Resize(
+                (self.backbone_input_size, self.backbone_input_size),
+                interpolation=transforms.InterpolationMode.BILINEAR,
+                antialias=True,
+            )
+        )
+
         # Convert style_codes dict from create_fixed_domain_style_codes to tensor once
         # and register as buffer so it moves with the model to different devices
         if not fast_forward and style_codes is not None:
@@ -211,6 +218,12 @@ class Pipeline(nn.Module):
         else:
             self.register_buffer("style_codes_tensor", None)
 
+    def size_fixer(self, x):
+        if self.resize_transform is not None:
+            if self.backbone_input_size != x.size(2):
+                x = self.resize_transform(x)
+        return x
+
     def forward(self, x):
         # Extract domain weights from input image
         if not self.fast_forward:
@@ -220,7 +233,23 @@ class Pipeline(nn.Module):
             weighted_style_code = torch.matmul(domain_weights, self.style_codes_tensor)
 
             # Generate fake image using the generator with weighted style code
-            x = self.generator.generate_with_style_code(x, weighted_style_code)
+            fake_images = self.generator.generate_with_style_code(
+                x, weighted_style_code
+            )
+            fake_images = self.size_fixer(fake_images)
+            if self.mix_up is True:
+                alpha = (
+                    self.mix_up_start
+                    + (self.mix_up_end - self.mix_up_start) * self.mix_up_current
+                )
+                x = self.size_fixer(x)
+                # Convert x from [-1, 1] to [0, 1] range to match fake_images
+                x = (x + 1.0) / 2.0
+                x = (1 - alpha) * x + alpha * fake_images
+                if self.mix_up_current < 1:
+                    self.mix_up_current += self.mix_up_growth
+            else:
+                x = fake_images
 
         # Extract features and classify
         logits = self.feature_extractor(x)

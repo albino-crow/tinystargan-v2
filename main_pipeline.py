@@ -30,7 +30,7 @@ def main(args):
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    if args.mode != "forward":
+    if args.mode == "star":
         _, nets_ema = build_model(args)
         ckptios = CheckpointIO(
             ospj(args.generator_checkpoint_dir, "{:06d}_nets_ema.ckpt"), **nets_ema
@@ -43,13 +43,29 @@ def main(args):
         generator = StarGanV2Generator(
             nets_ema.generator, output_dim=args.backbone_img_size
         )
+    elif args.mode == "tiny":
+        _, nets_ema = build_model(args)
+        ckptios = CheckpointIO(
+            ospj(args.generator_checkpoint_dir, "{:06d}_nets_ema.ckpt"), **nets_ema
+        )
+        ckptios.load(args.generator_iter)
 
+        style_codes = create_fixed_domain_style_codes(
+            nets_ema.mapping_network, args.num_domains, args.latent_dim, seed=args.seed
+        )
+        generator = StarGanV2Generator(
+            nets_ema.generator, output_dim=args.backbone_img_size
+        )
     pipeline = Pipeline(
         generator=generator,
         style_codes=style_codes if style_codes is not None else {},
         number_domain=args.num_domains,
         feature_extractor=FlexibleClassifier(backbone, num_classes=args.num_labels),
         fast_forward=(args.mode == "forward"),
+        mix_up=args.mix_up,
+        mix_up_start=args.mix_up_start,
+        mix_up_end=args.mix_up_end,
+        mix_up_growth=args.mix_up_growth,
     )
 
     # Move pipeline to device after creation
@@ -173,6 +189,20 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--weight_decay", type=float, default=1e-4, help="Weight decay for optimizer"
+    )
+
+    # mix-up arguments
+    parser.add_argument(
+        "--mix_up", type=bool, default=False, help="Enable mix-up augmentation"
+    )
+    parser.add_argument(
+        "--mix_up_start", type=float, default=0.0, help="Mix-up start value"
+    )
+    parser.add_argument(
+        "--mix_up_end", type=float, default=1.0, help="Mix-up end value"
+    )
+    parser.add_argument(
+        "--mix_up_growth", type=float, default=0.0001, help="Mix-up growth rate"
     )
 
     parser.add_argument(

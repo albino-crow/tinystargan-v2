@@ -19,12 +19,13 @@ def create_data_loader(
     valid_dir = f"{data_dir}/valid"
     test_dir = f"{data_dir}/test"
 
+    # this mean mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
     # Transforms (example: resize, normalize, etc.)
     transform = transforms.Compose(
         [
             transforms.Resize((image_size, image_size)),  # resize images
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ]
     )
 
