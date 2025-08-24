@@ -250,6 +250,8 @@ class Pipeline(nn.Module):
                     self.mix_up_current += self.mix_up_growth
             else:
                 x = fake_images
+        else:
+            x = (x + 1.0) / 2.0
 
         # Extract features and classify
         logits = self.feature_extractor(x)
