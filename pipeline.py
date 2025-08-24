@@ -236,7 +236,7 @@ class Pipeline(nn.Module):
             fake_images = self.generator.generate_with_style_code(
                 x, weighted_style_code
             )
-            fake_images = self.size_fixer(fake_images)
+            fake_images = (self.size_fixer(fake_images) + 1.0) / 2.0
             if self.mix_up is True:
                 alpha = (
                     self.mix_up_start
