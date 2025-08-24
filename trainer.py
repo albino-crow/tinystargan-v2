@@ -2,8 +2,9 @@ import torch
 import os
 from tqdm import tqdm
 from core.checkpoint import CheckpointIO
-from torchvision import datasets, transforms
+from torchvision import transforms
 from torch.utils.data import DataLoader
+from robust_dataset import RobustImageFolder
 
 
 def create_data_loader(
@@ -28,9 +29,9 @@ def create_data_loader(
     )
 
     # Datasets
-    train_dataset = datasets.ImageFolder(train_dir, transform=transform)
-    valid_dataset = datasets.ImageFolder(valid_dir, transform=transform)
-    test_dataset = datasets.ImageFolder(test_dir, transform=transform)
+    train_dataset = RobustImageFolder(train_dir, transform=transform)
+    valid_dataset = RobustImageFolder(valid_dir, transform=transform)
+    test_dataset = RobustImageFolder(test_dir, transform=transform)
 
     # DataLoaders
     train_loader = DataLoader(

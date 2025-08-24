@@ -23,6 +23,11 @@ def main(args):
     )
     generator = None
     style_codes = None
+    print(
+        "----------------------------------->",
+        "cuda" if torch.cuda.is_available() else "cpu",
+        "<-----------------------------------",
+    )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if args.mode != "forward":
