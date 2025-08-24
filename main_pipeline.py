@@ -97,7 +97,6 @@ def main(args):
         device=device,
         save_every_n_epochs=args.save_every,
         checkpoint_dir=args.checkpoint_dir,
-        
     )
     trainer.train(num_epochs=args.total_epoch, resume_epoch=args.resume_iter)
 
@@ -178,12 +177,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--lr", type=float, default=1e-4, help="Learning rate for D, E and G"
     )
-    parser.add_argument("--f_lr", type=float, default=1e-6, help="Learning rate for F")
     parser.add_argument(
         "--beta1", type=float, default=0.0, help="Decay rate for 1st moment of Adam"
     )
     parser.add_argument(
-        "--beta2", type=float, default=0.99, help="Decay rate for 2nd moment of Adam"
+        "--beta2", type=float, default=0.0, help="Decay rate for 2nd moment of Adam"
     )
     parser.add_argument(
         "--weight_decay", type=float, default=1e-4, help="Weight decay for optimizer"
