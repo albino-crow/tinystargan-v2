@@ -210,9 +210,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--fake_guide_epsilon", type=float, default=0.2, help="Epsilon for fake guide"
     )
-    parser.add_argument(
-        "--mix_up_growth", type=float, default=0.0001, help="Mix-up growth rate"
-    )
 
     parser.add_argument(
         "--num_workers",
