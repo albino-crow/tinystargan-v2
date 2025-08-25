@@ -23,8 +23,13 @@ class FlexibleClassifier(nn.Module):
     def forward(self, x):
         with torch.no_grad():  # freeze backbone
             features = self.backbone(x)
+        # Normalize features before classification
+        features = F.normalize(features, p=2, dim=1)
         out = self.classifier(features)
+        # Normalize output as well
+        out = F.normalize(out, p=2, dim=1)
         return out
+
 
 
 class ColorStyleExtractor(nn.Module):
