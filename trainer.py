@@ -200,6 +200,7 @@ class Trainer:
         device,
         checkpoint_dir="checkpoints",
         save_every_n_epochs=10,
+        name="Trainer",
     ):
         """
         Initialize the trainer.
@@ -214,6 +215,7 @@ class Trainer:
             checkpoint_dir: Directory to save checkpoints
             save_every_n_epochs: Save current model every n epochs
         """
+        self.name = name
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -385,7 +387,7 @@ class Trainer:
                 self.save_current_model(epoch + 1)
 
             # Print epoch summary
-            print(f"\nEpoch {epoch + 1} Summary:")
+            print(f"\nname = {self.name},Epoch {epoch + 1} Summary:")
             print(f"Train - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
             print(f"Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
             print(f"cheat test - Loss: {test_loss:.4f}, Acc: {test_acc:.4f}")
