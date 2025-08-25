@@ -258,6 +258,7 @@ class Pipeline(nn.Module):
                 # Set only those logit values to zero where diff is greater than epsilon
                 mask = diff > self.fake_guide_epsilon
                 logits = torch.where(mask, torch.zeros_like(logits), logits)
+                return logits
             else:
                 x = fake_images
         else:
