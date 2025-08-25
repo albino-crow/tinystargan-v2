@@ -478,6 +478,7 @@ class Pipeline(nn.Module):
                     self.mix_up_current += self.mix_up_growth
 
             if self.fake_guide:
+                x = self.size_fixer(x)
                 logits = self.feature_extractor(x)
                 fake_logits = self.feature_extractor(fake_images)
                 diff = torch.abs(logits - fake_logits)
@@ -491,6 +492,7 @@ class Pipeline(nn.Module):
             x = (x + 1.0) / 2.0
 
         # Extract features and classify
+        x = self.size_fixer(x)
         logits = self.feature_extractor(x)
 
         # Let PyTorch handle memory management automatically
