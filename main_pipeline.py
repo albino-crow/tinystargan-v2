@@ -17,6 +17,18 @@ from pipeline import (
 )
 
 
+def str2bool(v):
+    """Convert string to boolean value with flexible parsing."""
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("true", "t", "1", "yes", "y"):
+        return True
+    elif v.lower() in ("false", "f", "0", "no", "n"):
+        return False
+    else:
+        raise argparse.ArgumentTypeError(f"Boolean value expected, got: {v}")
+
+
 def main(args):
     backbone = timm.create_model(
         "hf-hub:1aurent/vit_small_patch8_224.lunit_dino",
@@ -208,7 +220,7 @@ if __name__ == "__main__":
 
     # mix-up arguments
     parser.add_argument(
-        "--mix_up", type=bool, default=False, help="Enable mix-up augmentation"
+        "--mix_up", type=str2bool, default=False, help="Enable mix-up augmentation"
     )
     parser.add_argument(
         "--mix_up_start", type=float, default=0.0, help="Mix-up start value"
@@ -220,7 +232,7 @@ if __name__ == "__main__":
         "--mix_up_growth", type=float, default=0.0001, help="Mix-up growth rate"
     )
     parser.add_argument(
-        "--fake_guide", type=bool, default=False, help="Enable fake guide"
+        "--fake_guide", type=str2bool, default=False, help="Enable fake guide"
     )
 
     parser.add_argument(
@@ -290,10 +302,10 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--all_domain", type=bool, default=False, help="Enable all domain"
+        "--all_domain", type=str2bool, default=False, help="Enable all domain"
     )
     parser.add_argument(
-        "--include_image", type=bool, default=False, help="Enable fake guide"
+        "--include_image", type=str2bool, default=False, help="Enable fake guide"
     )
     parser.add_argument("--number_convex", type=int, default=5)
 
