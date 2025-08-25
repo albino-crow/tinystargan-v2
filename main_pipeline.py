@@ -90,6 +90,7 @@ def main(args):
     # Create loss function based on number of labels
     criterion = nn.CrossEntropyLoss()
     trainer = Trainer(
+        name=args.checkpoint_dir,
         model=pipeline,
         train_loader=train_loader,
         val_loader=valid_loader,
