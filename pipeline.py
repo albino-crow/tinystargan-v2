@@ -181,6 +181,8 @@ class Pipeline(nn.Module):
         mix_up_end=1.0,
         mix_up_growth=0.0001,
         fast_forward=False,
+        fake_guide=False,
+        fake_guide_epsilon=0.1,
     ):
         super().__init__()
         self.generator = generator
@@ -190,14 +192,14 @@ class Pipeline(nn.Module):
         )
         self.feature_extractor = feature_extractor
         self.fast_forward = fast_forward
-
+        self.fake_guide = fake_guide
         self.backbone_input_size = backbone_input_size
         self.mix_up = mix_up
         self.mix_up_start = mix_up_start
         self.mix_up_end = mix_up_end
         self.mix_up_growth = mix_up_growth
         self.mix_up_current = 0
-
+        self.fake_guide_epsilon = fake_guide_epsilon
         self.resize_transform = (
             None
             if backbone_input_size is None
@@ -248,6 +250,14 @@ class Pipeline(nn.Module):
                 x = (1 - alpha) * x + alpha * fake_images
                 if self.mix_up_current < 1:
                     self.mix_up_current += self.mix_up_growth
+
+            if self.fake_guide:
+                logits = self.feature_extractor(x)
+                fake_logits = self.feature_extractor(fake_images)
+                diff = torch.abs(logits - fake_logits)
+                # Set only those logit values to zero where diff is greater than epsilon
+                mask = diff > self.fake_guide_epsilon
+                logits = torch.where(mask, torch.zeros_like(logits), logits)
             else:
                 x = fake_images
         else:

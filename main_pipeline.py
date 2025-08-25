@@ -63,6 +63,8 @@ def main(args):
         mix_up_start=args.mix_up_start,
         mix_up_end=args.mix_up_end,
         mix_up_growth=args.mix_up_growth,
+        fake_guide=args.fake_guide,
+        fake_guide_epsilon=args.fake_guide_epsilon,
     )
 
     # Move pipeline to device after creation
@@ -196,6 +198,16 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--mix_up_end", type=float, default=1.0, help="Mix-up end value"
+    )
+    parser.add_argument(
+        "--mix_up_growth", type=float, default=0.0001, help="Mix-up growth rate"
+    )
+    parser.add_argument(
+        "--fake_guide", type=bool, default=False, help="Enable fake guide"
+    )
+
+    parser.add_argument(
+        "--fake_guide_epsilon", type=float, default=0.2, help="Epsilon for fake guide"
     )
     parser.add_argument(
         "--mix_up_growth", type=float, default=0.0001, help="Mix-up growth rate"
