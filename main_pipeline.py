@@ -1,5 +1,5 @@
 import argparse
-from core.model import build_model
+from core.model import build_model, build_teacher_model
 import timm
 import torch
 import torch.nn as nn
@@ -9,6 +9,7 @@ from core.checkpoint import CheckpointIO
 from os.path import join as ospj
 
 from pipeline import (
+    MultiplePipeline,
     create_fixed_domain_style_codes,
     Pipeline,
     FlexibleClassifier,
@@ -29,9 +30,10 @@ def main(args):
         "<-----------------------------------",
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+    if args.mode == "forward" and args.loss_method != "normal":
+        raise NotImplementedError("there is no such action available for this task")
     if args.mode == "star":
-        _, nets_ema = build_model(args)
+        nets_ema = build_teacher_model(args)
         ckptios = CheckpointIO(
             ospj(args.generator_checkpoint_dir, "{:06d}_nets_ema.ckpt"), **nets_ema
         )
@@ -52,24 +54,37 @@ def main(args):
             nets_ema.mapping_network, args.num_domains, args.latent_dim, seed=args.seed
         )
         generator = StarGanV2Generator(nets_ema.generator)
-    pipeline = Pipeline(
-        generator=generator,
-        style_codes=style_codes if style_codes is not None else {},
-        number_domain=args.num_domains,
-        feature_extractor=FlexibleClassifier(backbone, num_classes=args.num_labels),
-        fast_forward=(args.mode == "forward"),
-        backbone_input_size=args.backbone_img_size,
-        mix_up=args.mix_up,
-        mix_up_start=args.mix_up_start,
-        mix_up_end=args.mix_up_end,
-        mix_up_growth=args.mix_up_growth,
-        fake_guide=args.fake_guide,
-        fake_guide_epsilon=args.fake_guide_epsilon,
-    )
-
-    # Move pipeline to device after creation
+    pipeline = None
+    if args.loss_method == "normal":
+        pipeline = Pipeline(
+            generator=generator,
+            style_codes=style_codes if style_codes is not None else {},
+            number_domain=args.num_domains,
+            feature_extractor=FlexibleClassifier(backbone, num_classes=args.num_labels),
+            fast_forward=(args.mode == "forward"),
+            backbone_input_size=args.backbone_img_size,
+            mix_up=args.mix_up,
+            mix_up_start=args.mix_up_start,
+            mix_up_end=args.mix_up_end,
+            mix_up_growth=args.mix_up_growth,
+            fake_guide=args.fake_guide,
+            fake_guide_epsilon=args.fake_guide_epsilon,
+        )
+    else:
+        pipeline = MultiplePipeline(
+            generator=generator,
+            style_codes=style_codes if style_codes is not None else {},
+            number_domain=args.num_domains,
+            feature_extractor=FlexibleClassifier(backbone, num_classes=args.num_labels),
+            backbone_input_size=args.backbone_img_size,
+            conv_type=args.convex_type,
+            all_domain=args.all_domain,
+            number_convex=args.number_convex,
+            include_image=args.include_image,
+            ensemble_mode=args.loss_method == "ensemble",
+        )
     pipeline.to(device)
-
+    loss_method = args.loss_method if args.loss_method != "ensemble" else "normal"
     train_loader, valid_loader, test_loader = create_data_loader(
         args.data_dir,
         image_size=args.img_size,
@@ -90,7 +105,6 @@ def main(args):
     # Create loss function based on number of labels
     criterion = nn.CrossEntropyLoss()
     trainer = Trainer(
-        name=args.checkpoint_dir,
         model=pipeline,
         train_loader=train_loader,
         val_loader=valid_loader,
@@ -98,8 +112,10 @@ def main(args):
         criterion=criterion,
         optimizer=optimizer,
         device=device,
-        save_every_n_epochs=args.save_every,
         checkpoint_dir=args.checkpoint_dir,
+        save_every_n_epochs=args.save_every,
+        name=args.checkpoint_dir,
+        mode=loss_method,
     )
     trainer.train(num_epochs=args.total_epoch, resume_epoch=args.resume_iter)
 
@@ -247,7 +263,7 @@ if __name__ == "__main__":
         help="Directory for saving metrics, i.e., loss and accuracy",
     )
 
-    parser.add_argument("--save_every", type=int, default=10)
+    parser.add_argument("--save_every", type=int, default=2)
 
     parser.add_argument(
         "--mode",
@@ -256,5 +272,30 @@ if __name__ == "__main__":
         choices=["star", "tiny", "forward"],
         help="This argument is used in solver",
     )
+
+    parser.add_argument(
+        "--loss_method",
+        type=str,
+        default="normal",
+        choices=["normal", "average", "majority", "leastrisk", "ensemble"],
+        help="This argument is used in trainer to choose the loss method",
+    )
+
+    parser.add_argument(
+        "--convex_type",
+        type=str,
+        default="blind",
+        choices=["blind", "linear", "conv"],
+        help="This argument is used in pipeline to find best combination of domains",
+    )
+
+    parser.add_argument(
+        "--all_domain", type=bool, default=False, help="Enable all domain"
+    )
+    parser.add_argument(
+        "--include_image", type=bool, default=False, help="Enable fake guide"
+    )
+    parser.add_argument("--number_convex", type=int, default=5)
+
     args = parser.parse_args()
     main(args)

@@ -5,6 +5,350 @@ from core.checkpoint import CheckpointIO
 from torchvision import transforms
 from torch.utils.data import DataLoader
 from robust_dataset import RobustImageFolder
+import torch.nn.functional as F
+from enum import Enum
+
+
+class ProcessingMode(Enum):
+    """
+    Enum for different processing modes when handling multiple outputs.
+    """
+
+    NORMAL = "normal"  # Standard single output processing
+    AVERAGE = "average"  # Average all logits from multiple outputs
+    MAJORITY = "majority"  # Use majority voting among predictions
+    LEASTRISK = "leastrisk"  # Select prediction with highest confidence (lowest risk)
+
+    @classmethod
+    def get_valid_modes(cls):
+        """Return list of valid mode strings."""
+        return [mode.value for mode in cls]
+
+    @classmethod
+    def is_valid_mode(cls, mode):
+        """Check if a mode string is valid."""
+        if isinstance(mode, cls):
+            return True
+        return mode in cls.get_valid_modes()
+
+
+def process_multiple_outputs(outputs_list, mode=ProcessingMode.AVERAGE):
+    """
+    Process multiple outputs based on different modes.
+
+    Args:
+        outputs_list: List of output tensors from model
+        mode: Processing mode - ProcessingMode enum or string
+
+    Returns:
+        final_outputs: Processed outputs for loss calculation
+        final_preds: Final predictions for accuracy calculation
+    """
+    # Convert string to enum if needed
+    if isinstance(mode, str):
+        mode_str = mode.lower()
+        if mode_str == "normal":
+            mode = ProcessingMode.NORMAL
+        elif mode_str == "average":
+            mode = ProcessingMode.AVERAGE
+        elif mode_str == "majority":
+            mode = ProcessingMode.MAJORITY
+        elif mode_str == "leastrisk":
+            mode = ProcessingMode.LEASTRISK
+        else:
+            raise ValueError(
+                f"Unknown mode: {mode_str}. Valid modes: {ProcessingMode.get_valid_modes()}"
+            )
+
+    if mode == ProcessingMode.AVERAGE:
+        # Average all logits
+        final_outputs = torch.stack(outputs_list, dim=0).mean(dim=0)
+        _, final_preds = torch.max(final_outputs, 1)
+
+    elif mode == ProcessingMode.MAJORITY:
+        # Get predictions from each output and use majority voting
+        all_preds = []
+        final_outputs = torch.stack(outputs_list, dim=0).mean(
+            dim=0
+        )  # For loss calculation
+
+        for output in outputs_list:
+            _, pred = torch.max(output, 1)
+            all_preds.append(pred)
+
+        # Stack predictions and use majority voting
+        all_preds = torch.stack(all_preds, dim=0)  # [num_models, batch_size]
+
+        # Majority voting for each sample
+        final_preds = []
+        for i in range(all_preds.size(1)):  # For each sample in batch
+            sample_preds = all_preds[:, i]  # Get all predictions for this sample
+            # Find most common prediction
+            values, counts = torch.unique(sample_preds, return_counts=True)
+            majority_pred = values[torch.argmax(counts)]
+            final_preds.append(majority_pred)
+
+        final_preds = torch.stack(final_preds)
+
+    elif mode == ProcessingMode.LEASTRISK:
+        # Select the prediction with highest confidence (lowest risk)
+        max_confidences = []
+
+        for output in outputs_list:
+            # Get maximum confidence (probability) for each sample
+            probs = F.softmax(output, dim=1)
+            max_conf, _ = torch.max(probs, dim=1)
+            max_confidences.append(max_conf)
+
+        # Stack confidences: [num_models, batch_size]
+        max_confidences = torch.stack(max_confidences, dim=0)
+
+        # For each sample, find which model has highest confidence
+        best_model_indices = torch.argmax(max_confidences, dim=0)
+
+        # Select outputs and predictions from best models
+        final_outputs = []
+        final_preds = []
+
+        for i, best_idx in enumerate(best_model_indices):
+            final_outputs.append(outputs_list[best_idx][i])
+            _, pred = torch.max(outputs_list[best_idx][i : i + 1], 1)
+            final_preds.append(pred)
+
+        final_outputs = torch.stack(final_outputs)
+        final_preds = torch.cat(final_preds)
+
+    else:
+        raise ValueError(
+            f"Unknown mode: {mode}. Valid modes: {ProcessingMode.get_valid_modes()}"
+        )
+
+    return final_outputs, final_preds
+
+
+def train_one_epoch_with_mode(
+    model,
+    train_loader,
+    criterion,
+    optimizer,
+    device,
+    epoch,
+    num_epochs,
+    mode=ProcessingMode.NORMAL,
+):
+    """
+    Enhanced train_one_epoch function that supports different processing modes.
+
+    Args:
+        mode: ProcessingMode enum or string - "normal", "average", "majority", "leastrisk"
+    """
+    # Convert to string for display purposes
+    mode_str = mode.value if isinstance(mode, ProcessingMode) else mode
+    model.train()
+    loop = tqdm(
+        train_loader, desc=f"Epoch [{epoch + 1}/{num_epochs}] ({mode_str})", leave=False
+    )
+
+    running_loss = 0.0
+    running_corrects = 0
+    num_batches = 0
+    total_samples = 0
+
+    for images, labels in loop:
+        images, labels = images.to(device), labels.to(device)
+
+        optimizer.zero_grad()
+        outputs = model(images)
+
+        # Convert string to enum if needed
+        if isinstance(mode, str):
+            if mode.lower() == "normal":
+                current_mode = ProcessingMode.NORMAL
+            else:
+                current_mode = mode  # Will be handled by process_multiple_outputs
+        else:
+            current_mode = mode
+
+        if current_mode == ProcessingMode.NORMAL:
+            # Standard processing for single output
+            loss = criterion(outputs, labels)
+            _, preds = torch.max(outputs, 1)
+        else:
+            # Multiple outputs processing
+            if not isinstance(outputs, list):
+                raise ValueError(
+                    f"Expected list of outputs for mode '{mode_str}', but got single tensor"
+                )
+
+            # Process multiple outputs based on mode
+            final_outputs, preds = process_multiple_outputs(outputs, current_mode)
+            loss = criterion(final_outputs, labels)
+
+        loss.backward()
+        optimizer.step()
+
+        # Update running loss
+        running_loss += loss.item()
+
+        # Compute batch accuracy
+        running_corrects += torch.sum(preds == labels).item()
+        total_samples += labels.size(0)
+
+        num_batches += 1
+
+        # Update tqdm bar with running loss and accuracy
+        loop.set_postfix(
+            loss=running_loss / num_batches, accuracy=running_corrects / total_samples
+        )
+
+        # Clear GPU memory cache after each batch
+        torch.cuda.empty_cache()
+
+    epoch_loss = running_loss / num_batches
+    epoch_acc = running_corrects / total_samples
+    print(
+        f"Train Epoch [{epoch + 1}/{num_epochs}] ({mode_str}) Loss: {epoch_loss:.4f}, Acc: {epoch_acc:.4f}"
+    )
+    return epoch_loss, epoch_acc
+
+
+@torch.no_grad()
+def validate_one_epoch_with_mode(
+    model, val_loader, criterion, device, epoch, num_epochs, mode=ProcessingMode.NORMAL
+):
+    """
+    Enhanced validate_one_epoch function that supports different processing modes.
+
+    Args:
+        mode: ProcessingMode enum or string - "normal", "average", "majority", "leastrisk"
+    """
+    # Convert to string for display purposes
+    mode_str = mode.value if isinstance(mode, ProcessingMode) else mode
+    model.eval()
+    running_loss = 0.0
+    running_corrects = 0
+    num_batches = 0
+    total_samples = 0
+
+    loop = tqdm(
+        val_loader, desc=f"Val [{epoch + 1}/{num_epochs}] ({mode_str})", leave=False
+    )
+    for images, labels in loop:
+        images, labels = images.to(device), labels.to(device)
+
+        outputs = model(images)
+
+        # Convert string to enum if needed
+        if isinstance(mode, str):
+            if mode.lower() == "normal":
+                current_mode = ProcessingMode.NORMAL
+            else:
+                current_mode = mode  # Will be handled by process_multiple_outputs
+        else:
+            current_mode = mode
+
+        if current_mode == ProcessingMode.NORMAL:
+            # Standard processing for single output
+            loss = criterion(outputs, labels)
+            _, preds = torch.max(outputs, 1)
+        else:
+            # Multiple outputs processing
+            if not isinstance(outputs, list):
+                raise ValueError(
+                    f"Expected list of outputs for mode '{mode_str}', but got single tensor"
+                )
+
+            # Process multiple outputs based on mode
+            final_outputs, preds = process_multiple_outputs(outputs, current_mode)
+            loss = criterion(final_outputs, labels)
+
+        running_loss += loss.item()
+        running_corrects += torch.sum(preds == labels).item()
+        total_samples += labels.size(0)
+        num_batches += 1
+
+        loop.set_postfix(
+            loss=running_loss / num_batches, accuracy=running_corrects / total_samples
+        )
+
+        # Clear GPU memory cache after each batch
+        torch.cuda.empty_cache()
+
+    epoch_loss = running_loss / num_batches
+    epoch_acc = running_corrects / total_samples
+    print(
+        f"Val Epoch [{epoch + 1}/{num_epochs}] ({mode_str}) Loss: {epoch_loss:.4f}, Acc: {epoch_acc:.4f}"
+    )
+    return epoch_loss, epoch_acc
+
+
+@torch.no_grad()
+def test_model_with_mode(
+    model, test_loader, criterion, device, mode=ProcessingMode.NORMAL
+):
+    """
+    Enhanced test function that supports different processing modes.
+
+    Args:
+        mode: ProcessingMode enum or string - "normal", "average", "majority", "leastrisk"
+    """
+    # Convert to string for display purposes
+    mode_str = mode.value if isinstance(mode, ProcessingMode) else mode
+    model.eval()
+    running_loss = 0.0
+    running_corrects = 0
+    num_batches = 0
+    total_samples = 0
+
+    print(f"Testing model with mode: {mode_str}...")
+    loop = tqdm(test_loader, desc=f"Testing ({mode_str})", leave=True)
+
+    for images, labels in loop:
+        images, labels = images.to(device), labels.to(device)
+
+        outputs = model(images)
+
+        # Convert string to enum if needed
+        if isinstance(mode, str):
+            if mode.lower() == "normal":
+                current_mode = ProcessingMode.NORMAL
+            else:
+                current_mode = mode  # Will be handled by process_multiple_outputs
+        else:
+            current_mode = mode
+
+        if current_mode == ProcessingMode.NORMAL:
+            # Standard processing for single output
+            loss = criterion(outputs, labels)
+            _, preds = torch.max(outputs, 1)
+        else:
+            # Multiple outputs processing
+            if not isinstance(outputs, list):
+                raise ValueError(
+                    f"Expected list of outputs for mode '{mode_str}', but got single tensor"
+                )
+
+            # Process multiple outputs based on mode
+            final_outputs, preds = process_multiple_outputs(outputs, current_mode)
+            loss = criterion(final_outputs, labels)
+
+        running_loss += loss.item()
+        running_corrects += torch.sum(preds == labels).item()
+        total_samples += labels.size(0)
+        num_batches += 1
+
+        loop.set_postfix(
+            loss=running_loss / num_batches, accuracy=running_corrects / total_samples
+        )
+
+        # Clear GPU memory cache after each batch
+        torch.cuda.empty_cache()
+
+    test_loss = running_loss / num_batches
+    test_acc = running_corrects / total_samples
+    print(f"Test Results ({mode}) - Loss: {test_loss:.4f}, Accuracy: {test_acc:.4f}")
+
+    return test_loss, test_acc
 
 
 def create_data_loader(
@@ -201,6 +545,7 @@ class Trainer:
         checkpoint_dir="checkpoints",
         save_every_n_epochs=10,
         name="Trainer",
+        mode="normal",  # New parameter for processing mode
     ):
         """
         Initialize the trainer.
@@ -214,8 +559,10 @@ class Trainer:
             device: Device to run on (cuda/cpu)
             checkpoint_dir: Directory to save checkpoints
             save_every_n_epochs: Save current model every n epochs
+            mode: Processing mode - "normal", "average", "majority", "leastrisk"
         """
         self.name = name
+        self.mode = mode  # Store the processing mode
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -319,8 +666,8 @@ class Trainer:
             return False
 
     def train_epoch(self, epoch, num_epochs):
-        """Train for one epoch."""
-        return train_one_epoch(
+        """Train for one epoch using the configured mode."""
+        return train_one_epoch_with_mode(
             self.model,
             self.train_loader,
             self.criterion,
@@ -328,12 +675,19 @@ class Trainer:
             self.device,
             epoch,
             num_epochs,
+            self.mode,
         )
 
     def validate_epoch(self, epoch, num_epochs):
-        """Validate for one epoch."""
-        return validate_one_epoch(
-            self.model, self.val_loader, self.criterion, self.device, epoch, num_epochs
+        """Validate for one epoch using the configured mode."""
+        return validate_one_epoch_with_mode(
+            self.model,
+            self.val_loader,
+            self.criterion,
+            self.device,
+            epoch,
+            num_epochs,
+            self.mode,
         )
 
     def train(self, num_epochs, resume_epoch=0):
@@ -410,16 +764,15 @@ class Trainer:
 
     def test(self):
         """
-        Test the current model.
-
-        Args:
-            test_loader: DataLoader for test data
+        Test the current model using the configured mode.
 
         Returns:
             test_loss: Test loss
             test_acc: Test accuracy
         """
-        return test_model(self.model, self.test_loader, self.criterion, self.device)
+        return test_model_with_mode(
+            self.model, self.test_loader, self.criterion, self.device, self.mode
+        )
 
     def test_best_model(self):
         """
@@ -483,6 +836,7 @@ def train_model_example(
     num_epochs=100,
     checkpoint_dir="checkpoints",
     save_every_n_epochs=10,
+    mode="normal",  # New parameter for processing mode
 ):
     """
     Example function showing how to use the Trainer class.
@@ -498,17 +852,20 @@ def train_model_example(
         num_epochs: Number of epochs to train
         checkpoint_dir: Directory to save checkpoints
         save_every_n_epochs: Save model every n epochs
+        mode: Processing mode - "normal", "average", "majority", "leastrisk"
     """
     # Create trainer
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
+        test_loader=test_loader,
         criterion=criterion,
         optimizer=optimizer,
         device=device,
         checkpoint_dir=checkpoint_dir,
         save_every_n_epochs=save_every_n_epochs,
+        mode=mode,  # Pass the mode parameter
     )
 
     # Train the model
@@ -520,11 +877,11 @@ def train_model_example(
 
     # Test current model
     print("\nTesting current model...")
-    current_test_loss, current_test_acc = trainer.test(test_loader)
+    current_test_loss, current_test_acc = trainer.test()
 
     # Test best model
     print("\nTesting best model...")
-    best_test_loss, best_test_acc = trainer.test_best_model(test_loader)
+    best_test_loss, best_test_acc = trainer.test_best_model()
 
     print("\nFinal Results:")
     print(
@@ -535,3 +892,25 @@ def train_model_example(
     )
 
     return trainer, history
+
+
+# Usage Examples:
+#
+# For normal single output models:
+# trainer = Trainer(model, train_loader, val_loader, test_loader, criterion, optimizer, device, mode="normal")
+#
+# For MultiplePipeline with ensemble averaging:
+# pipeline = MultiplePipeline(..., ensemble_mode=True)  # Returns single averaged output
+# trainer = Trainer(pipeline, train_loader, val_loader, test_loader, criterion, optimizer, device, mode="normal")
+#
+# For MultiplePipeline with multiple outputs and average processing:
+# pipeline = MultiplePipeline(..., ensemble_mode=False)  # Returns list of outputs
+# trainer = Trainer(pipeline, train_loader, val_loader, test_loader, criterion, optimizer, device, mode="average")
+#
+# For MultiplePipeline with multiple outputs and majority voting:
+# pipeline = MultiplePipeline(..., ensemble_mode=False)  # Returns list of outputs
+# trainer = Trainer(pipeline, train_loader, val_loader, test_loader, criterion, optimizer, device, mode="majority")
+#
+# For MultiplePipeline with multiple outputs and least risk (highest confidence) selection:
+# pipeline = MultiplePipeline(..., ensemble_mode=False)  # Returns list of outputs
+# trainer = Trainer(pipeline, train_loader, val_loader, test_loader, criterion, optimizer, device, mode="leastrisk")

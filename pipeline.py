@@ -31,7 +31,6 @@ class FlexibleClassifier(nn.Module):
         return out
 
 
-
 class ColorStyleExtractor(nn.Module):
     def __init__(self, number_domain=5):  # Match StarGAN v2's style_dim
         super().__init__()
@@ -173,6 +172,228 @@ class StarGanV2Generator(nn.Module):
         return fake_images
 
 
+class BlindDomainPredictor(nn.Module):
+    """
+    Blind convex model that learns domain weights without image input.
+    Contains learnable parameters that are optimized through backpropagation
+    to produce convex output (non-negative values that sum to 1).
+    """
+
+    def __init__(self, number_domain):
+        super().__init__()
+        self.number_domain = number_domain
+
+        # Learnable parameters initialized randomly
+        # These will be optimized through backpropagation
+        self.domain_weights = nn.Parameter(torch.randn(number_domain))
+
+    def forward(self, x=None):
+        """
+        Forward pass that returns convex output (non-negative, sum=1)
+
+        Args:
+            x: Input image tensor (ignored, can be None)
+
+        Returns:
+            Domain weights tensor [1, number_domain] where:
+            - All values are non-negative
+            - Each row sums to 1 (convex combination)
+        """
+        # Apply softmax to ensure convex output (non-negative, sum=1)
+        domain_weights = F.softmax(self.domain_weights, dim=0)
+
+        # Expand to match batch size if input is provided
+        if x is not None:
+            batch_size = x.size(0)
+            domain_weights = domain_weights.unsqueeze(0).expand(batch_size, -1)
+        else:
+            # Return single batch dimension if no input provided
+            domain_weights = domain_weights.unsqueeze(0)
+
+        return domain_weights
+
+
+class ConvexDomainPredictor(nn.Module):
+    """
+    Simple single-layer convex model that takes an image as input and returns convex output
+    (non-negative values that sum to 1) with dimension equal to number of domains.
+    """
+
+    def __init__(self, number_domain, input_channels=3):
+        super().__init__()
+        self.number_domain = number_domain
+
+        # Simple single convolutional layer followed by global average pooling
+        self.conv_layer = nn.Conv2d(input_channels, number_domain, kernel_size=1)
+
+    def forward(self, x):
+        """
+        Forward pass that returns convex output (non-negative, sum=1)
+
+        Args:
+            x: Input image tensor [batch_size, channels, height, width]
+
+        Returns:
+            Domain weights tensor [batch_size, number_domain] where:
+            - All values are non-negative
+            - Each row sums to 1 (convex combination)
+        """
+        # Pass through single conv layer: [batch_size, number_domain, height, width]
+        conv_out = self.conv_layer(x)
+
+        # Global average pooling to get [batch_size, number_domain]
+        pooled = F.adaptive_avg_pool2d(conv_out, (1, 1)).squeeze(-1).squeeze(-1)
+
+        # Apply softmax to ensure convex output (non-negative, sum=1)
+        domain_weights = F.softmax(pooled, dim=1)
+
+        return domain_weights
+
+
+class LinearDomainPredictor(nn.Module):
+    """
+    Simple single linear layer model that takes an image as input and returns convex output
+    (non-negative values that sum to 1) with dimension equal to number of domains.
+    """
+
+    def __init__(self, number_domain, input_channels=3, image_size=256):
+        super().__init__()
+        self.number_domain = number_domain
+        self.input_size = input_channels * image_size * image_size
+
+        # Simple single linear layer
+        self.linear_layer = nn.Linear(self.input_size, number_domain)
+
+    def forward(self, x):
+        """
+        Forward pass that returns convex output (non-negative, sum=1)
+
+        Args:
+            x: Input image tensor [batch_size, channels, height, width]
+
+        Returns:
+            Domain weights tensor [batch_size, number_domain] where:
+            - All values are non-negative
+            - Each row sums to 1 (convex combination)
+        """
+        # Flatten the image: [batch_size, channels * height * width]
+        flattened = x.view(x.size(0), -1)
+
+        # Pass through single linear layer: [batch_size, number_domain]
+        logits = self.linear_layer(flattened)
+
+        # Apply softmax to ensure convex output (non-negative, sum=1)
+        domain_weights = F.softmax(logits, dim=1)
+
+        return domain_weights
+
+
+class MultiplePipeline(nn.Module):
+    def __init__(
+        self,
+        generator,
+        style_codes,
+        number_domain,
+        feature_extractor,
+        backbone_input_size,
+        conv_type="linear",
+        all_domain=False,
+        number_convex=5,
+        include_image=True,
+        ensemble_mode=True,  # New parameter to control output format
+    ):
+        super().__init__()
+        self.generator = generator
+        self.number_domain = number_domain
+        self.include_image = include_image
+        self.feature_extractor = feature_extractor
+        self.all_domain = all_domain
+        self.number_convex = number_convex
+        self.backbone_input_size = backbone_input_size
+        self.ensemble_mode = ensemble_mode  # If True, return single averaged output; if False, return list
+        self.resize_transform = (
+            None
+            if backbone_input_size is None
+            else transforms.Resize(
+                (self.backbone_input_size, self.backbone_input_size),
+                interpolation=transforms.InterpolationMode.BILINEAR,
+                antialias=True,
+            )
+        )
+
+        # Convert style_codes dict from create_fixed_domain_style_codes to tensor once
+        # and register as buffer so it moves with the model to different devices
+        style_codes_tensor = torch.stack([style_codes[i] for i in range(number_domain)])
+        self.register_buffer("style_codes_tensor", style_codes_tensor)
+
+        # Create convex models that output domain weights (non-negative, sum=1)
+        if conv_type == "conv":
+            self.convex_models = nn.ModuleList(
+                [ConvexDomainPredictor(number_domain) for _ in range(number_convex)]
+            )
+        elif conv_type == "linear":
+            self.convex_models = nn.ModuleList(
+                [LinearDomainPredictor(number_domain) for _ in range(number_convex)]
+            )
+        elif conv_type == "blind":
+            self.convex_models = nn.ModuleList(
+                [BlindDomainPredictor(number_domain) for _ in range(number_convex)]
+            )
+        else:
+            raise ValueError(f"Unknown conv_type: {conv_type}")
+
+    def size_fixer(self, x):
+        if self.resize_transform is not None:
+            if self.backbone_input_size != x.size(2):
+                x = self.resize_transform(x)
+        return x
+
+    def forward(self, x):
+        # Extract domain weights from input image
+
+        # Store all generated images
+        xs = []
+
+        if self.all_domain is False:
+            for model in self.convex_models:
+                domain_weights = model(x)
+                weighted_style_code = torch.matmul(
+                    domain_weights, self.style_codes_tensor
+                )
+
+                fake_images = self.generator.generate_with_style_code(
+                    x, weighted_style_code
+                )
+                fake_images = self.size_fixer(fake_images)
+                xs.append(fake_images)
+        else:
+            for i in range(self.number_domain):
+                fake_images = self.generator.generate_with_style_code(
+                    x, self.style_codes_tensor[i]
+                )
+                fake_images = self.size_fixer(fake_images)
+                xs.append(fake_images)
+
+        if self.include_image:
+            # Convert x from [-1, 1] to [0, 1] range to match fake_images
+            original_images = (self.size_fixer(x) + 1.0) / 2.0
+            xs.append(original_images)
+
+        # Extract features from all images
+        all_logits = []
+        for image in xs:
+            logits = self.feature_extractor(image)
+            all_logits.append(logits)
+
+        if self.ensemble_mode:
+            # Average all logits for ensemble prediction (compatible with standard trainer)
+            ensemble_logits = torch.stack(all_logits, dim=0).mean(dim=0)
+            return ensemble_logits
+        else:
+            # Return list of logits (for custom training loops that can handle multiple outputs)
+            return all_logits
+
+
 class Pipeline(nn.Module):
     def __init__(
         self,
@@ -243,7 +464,7 @@ class Pipeline(nn.Module):
             fake_images = self.generator.generate_with_style_code(
                 x, weighted_style_code
             )
-            fake_images = (self.size_fixer(fake_images) + 1.0) / 2.0
+            fake_images = self.size_fixer(fake_images)
             if self.mix_up is True:
                 alpha = (
                     self.mix_up_start
