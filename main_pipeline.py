@@ -103,6 +103,8 @@ def main(args):
             "ensemble",
             "vector_ensemble",
             "matrix_ensemble",
+            "affine_matrix_ensemble",
+            "affine_vector_ensemble",
         ]
         else "normal"
     )
@@ -306,6 +308,8 @@ if __name__ == "__main__":
             "ensemble",
             "vector_ensemble",
             "matrix_ensemble",
+            "affine_vector_ensemble",
+            "affine_matrix_ensemble",
         ],
         help="This argument is used in trainer to choose the loss method",
     )

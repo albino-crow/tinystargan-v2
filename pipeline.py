@@ -315,16 +315,15 @@ class MultiplePipeline(nn.Module):
             ensemble_mode  # 'ensemble', 'vector_ensemble', 'matrix_ensemble', or None
         )
         # For vector_ensemble: learnable weights for each logit vector
-        if ensemble_mode == "vector_ensemble":
-            print("++++++++++vector_ensemble+++++++++++++++")
+        if ensemble_mode in ["vector_ensemble", "affine_vector_ensemble"]:
+            print(f"++++++++++{ensemble_mode}+++++++++++++++")
             self.vector_weights = nn.Parameter(
                 torch.ones(number_convex + int(include_image))
             )
         # For matrix_ensemble: learnable weights for each scalar in each logit vector
-        elif ensemble_mode == "matrix_ensemble":
+        elif ensemble_mode in ["matrix_ensemble", "affine_matrix_ensemble"]:
             # Use provided num_output_features or try to get from feature_extractor
-            print("++++++++++matrix_ensemble+++++++++++++++")
-
+            print(f"++++++++++{ensemble_mode}+++++++++++++++")
             num_output_features = feature_extractor.embedding_dim
             self.matrix_weights = nn.Parameter(
                 torch.ones(number_convex + int(include_image), num_output_features)
@@ -409,19 +408,26 @@ class MultiplePipeline(nn.Module):
             # Simple average (sum) over all logits
             ensemble_logits = torch.stack(all_logits, dim=0).mean(dim=0)
             return ensemble_logits
-        elif self.ensemble_mode == "vector_ensemble":
+        elif self.ensemble_mode in ["vector_ensemble", "affine_vector_ensemble"]:
             # Weighted sum with learnable vector weights
-            weights = torch.softmax(self.vector_weights, dim=0)
+            if self.ensemble_mode == "vector_ensemble":
+                weights = torch.softmax(self.vector_weights, dim=0)  # Convex: softmax normalization
+            else:  # affine_vector_ensemble
+                weights = self.vector_weights / self.vector_weights.sum(dim=0, keepdim=True)  # Affine: simple normalization
             logits_stack = torch.stack(all_logits, dim=0)  # [N, batch, logit]
             # Weighted sum over N pipelines/images
             ensemble_logits = (logits_stack * weights.unsqueeze(1).unsqueeze(2)).sum(
                 dim=0
             )
             return ensemble_logits
-        elif self.ensemble_mode == "matrix_ensemble":
+        elif self.ensemble_mode in ["matrix_ensemble", "affine_matrix_ensemble"]:
             # Weighted sum with learnable matrix weights (per logit scalar)
-            # For each feature position, weights across all pipelines sum to 1
-            weights = torch.softmax(self.matrix_weights, dim=0)  # [N, logit]
+            if self.ensemble_mode == "matrix_ensemble":
+                # Convex: softmax normalization - weights across all pipelines sum to 1
+                weights = torch.softmax(self.matrix_weights, dim=0)  # [N, logit]
+            else:  # affine_matrix_ensemble
+                # Affine: simple normalization - weights can be negative
+                weights = self.matrix_weights / self.matrix_weights.sum(dim=0, keepdim=True)  # [N, logit]
             logits_stack = torch.stack(all_logits, dim=0)  # [N, batch, logit]
             # Apply element-wise weights to each scalar in each logit vector, then sum over N
             weighted_logits = logits_stack * weights.unsqueeze(1)  # [N, batch, logit]
