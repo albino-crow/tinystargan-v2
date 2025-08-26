@@ -16,6 +16,7 @@ class FlexibleClassifier(nn.Module):
     def __init__(self, backbone, embedding_dim=384, num_classes=2):
         super().__init__()
         self.backbone = backbone
+        self.embedding_dim = embedding_dim
         self.classifier = nn.Linear(
             embedding_dim, num_classes
         )  # flexible number of classes
@@ -300,7 +301,7 @@ class MultiplePipeline(nn.Module):
         all_domain=False,
         number_convex=5,
         include_image=True,
-        ensemble_mode=True,  # New parameter to control output format
+        ensemble_mode=None,  # New parameter to control output format
     ):
         super().__init__()
         self.generator = generator
@@ -310,7 +311,21 @@ class MultiplePipeline(nn.Module):
         self.all_domain = all_domain
         self.number_convex = number_convex
         self.backbone_input_size = backbone_input_size
-        self.ensemble_mode = ensemble_mode  # If True, return single averaged output; if False, return list
+        self.ensemble_mode = (
+            ensemble_mode  # 'ensemble', 'vector_ensemble', 'matrix_ensemble', or None
+        )
+        # For vector_ensemble: learnable weights for each logit vector
+        if ensemble_mode == "vector_ensemble":
+            self.vector_weights = nn.Parameter(
+                torch.ones(number_convex + int(include_image))
+            )
+        # For matrix_ensemble: learnable weights for each scalar in each logit vector
+        elif ensemble_mode == "matrix_ensemble":
+            # Use provided num_output_features or try to get from feature_extractor
+            num_output_features = feature_extractor.embedding_dim
+            self.matrix_weights = nn.Parameter(
+                torch.ones(number_convex + int(include_image), num_output_features)
+            )
         self.resize_transform = (
             None
             if backbone_input_size is None
@@ -341,6 +356,8 @@ class MultiplePipeline(nn.Module):
             )
         else:
             raise ValueError(f"Unknown conv_type: {conv_type}")
+
+    # ...existing code...
 
     def size_fixer(self, x):
         if self.resize_transform is not None:
@@ -385,9 +402,27 @@ class MultiplePipeline(nn.Module):
             logits = self.feature_extractor(image)
             all_logits.append(logits)
 
-        if self.ensemble_mode:
-            # Average all logits for ensemble prediction (compatible with standard trainer)
+        if self.ensemble_mode == "ensemble":
+            # Simple average (sum) over all logits
             ensemble_logits = torch.stack(all_logits, dim=0).mean(dim=0)
+            return ensemble_logits
+        elif self.ensemble_mode == "vector_ensemble":
+            # Weighted sum with learnable vector weights
+            weights = torch.softmax(self.vector_weights, dim=0)
+            logits_stack = torch.stack(all_logits, dim=0)  # [N, batch, logit]
+            # Weighted sum over N pipelines/images
+            ensemble_logits = (logits_stack * weights.unsqueeze(1).unsqueeze(2)).sum(
+                dim=0
+            )
+            return ensemble_logits
+        elif self.ensemble_mode == "matrix_ensemble":
+            # Weighted sum with learnable matrix weights (per logit scalar)
+            # For each feature position, weights across all pipelines sum to 1
+            weights = torch.softmax(self.matrix_weights, dim=0)  # [N, logit]
+            logits_stack = torch.stack(all_logits, dim=0)  # [N, batch, logit]
+            # Apply element-wise weights to each scalar in each logit vector, then sum over N
+            weighted_logits = logits_stack * weights.unsqueeze(1)  # [N, batch, logit]
+            ensemble_logits = weighted_logits.sum(dim=0)  # [batch, logit]
             return ensemble_logits
         else:
             # Return list of logits (for custom training loops that can handle multiple outputs)

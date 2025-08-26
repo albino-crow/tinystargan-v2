@@ -93,10 +93,10 @@ def main(args):
             all_domain=args.all_domain,
             number_convex=args.number_convex,
             include_image=args.include_image,
-            ensemble_mode=args.loss_method == "ensemble",
+            ensemble_mode=args.loss_method if "ensemble" in args.loss_method else None,
         )
     pipeline.to(device)
-    loss_method = args.loss_method if args.loss_method != "ensemble" else "normal"
+    loss_method = args.loss_method if "ensemble" in args.loss_method else "normal"
     train_loader, valid_loader, test_loader = create_data_loader(
         args.data_dir,
         image_size=args.img_size,
@@ -289,7 +289,15 @@ if __name__ == "__main__":
         "--loss_method",
         type=str,
         default="normal",
-        choices=["normal", "average", "majority", "leastrisk", "ensemble"],
+        choices=[
+            "normal",
+            "average",
+            "majority",
+            "leastrisk",
+            "ensemble",
+            "vector_ensemble",
+            "matrix_ensemble",
+        ],
         help="This argument is used in trainer to choose the loss method",
     )
 
