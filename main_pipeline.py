@@ -220,10 +220,10 @@ if __name__ == "__main__":
         "--lr", type=float, default=1e-4, help="Learning rate for D, E and G"
     )
     parser.add_argument(
-        "--beta1", type=float, default=0.0, help="Decay rate for 1st moment of Adam"
+        "--beta1", type=float, default=0.9, help="Decay rate for 1st moment of Adam"
     )
     parser.add_argument(
-        "--beta2", type=float, default=0.0, help="Decay rate for 2nd moment of Adam"
+        "--beta2", type=float, default=0.999, help="Decay rate for 2nd moment of Adam"
     )
     parser.add_argument(
         "--weight_decay", type=float, default=1e-4, help="Weight decay for optimizer"
