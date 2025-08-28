@@ -384,7 +384,7 @@ class MultiplePipeline(nn.Module):
     # ...existing code...
     def extract(self, x):
         with torch.no_grad():  # freeze backbone
-            return self.backbone(x)
+            return self.feature_extractor(x)
 
     def size_fixer(self, x):
         if self.resize_transform is not None:
