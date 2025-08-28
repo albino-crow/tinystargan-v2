@@ -32,6 +32,18 @@ class FlexibleClassifier(nn.Module):
         return out
 
 
+class OneLayerClassifier(nn.Module):
+    def __init__(self, input_dim=384, num_classes=2):
+        super().__init__()
+        self.classifier = nn.Linear(input_dim, num_classes)
+
+    def forward(self, x):
+        out = self.classifier(x)
+        # Normalize output along feature dimension
+        out = F.normalize(out, p=2, dim=1)
+        return out
+
+
 class ColorStyleExtractor(nn.Module):
     def __init__(self, number_domain=5):  # Match StarGAN v2's style_dim
         super().__init__()
@@ -296,8 +308,10 @@ class MultiplePipeline(nn.Module):
         style_codes,
         number_domain,
         feature_extractor,
+        feature_extractor_embedding,
         backbone_input_size,
         conv_type="linear",
+        number_label=2,
         all_domain=False,
         number_convex=5,
         include_image=True,
@@ -311,6 +325,9 @@ class MultiplePipeline(nn.Module):
         self.all_domain = all_domain
         self.number_convex = number_convex
         self.backbone_input_size = backbone_input_size
+        self.classifier = OneLayerClassifier(
+            input_dim=feature_extractor_embedding, num_classes=number_label
+        )
         self.ensemble_mode = (
             ensemble_mode  # 'ensemble', 'vector_ensemble', 'matrix_ensemble', or None
         )
@@ -322,19 +339,16 @@ class MultiplePipeline(nn.Module):
             )
         # For matrix_ensemble: learnable weights for each scalar in each logit vector
         elif ensemble_mode in ["matrix_ensemble", "affine_matrix_ensemble"]:
-            # Use provided num_output_features or try to get from feature_extractor
-            with torch.no_grad():
-                dummy_input = torch.zeros(1, 3, backbone_input_size, backbone_input_size)
-                dummy_output = feature_extractor(dummy_input)   # [1, L]
-                num_output_features = dummy_output.shape[-1]
-            
             self.matrix_weights = nn.Parameter(
-                torch.ones(number_convex + int(include_image), num_output_features)
-)
+                torch.ones(
+                    number_convex + int(include_image), feature_extractor_embedding
+                )
+            )
             print(f"++++++++++{ensemble_mode}+++++++++++++++")
-            num_output_features = feature_extractor.embedding_dim
             self.matrix_weights = nn.Parameter(
-                torch.ones(number_convex + int(include_image), num_output_features)
+                torch.ones(
+                    number_convex + int(include_image), feature_extractor_embedding
+                )
             )
         self.resize_transform = (
             None
@@ -415,19 +429,23 @@ class MultiplePipeline(nn.Module):
         if self.ensemble_mode == "ensemble":
             # Simple average (sum) over all logits
             ensemble_logits = torch.stack(all_logits, dim=0).mean(dim=0)
-            return ensemble_logits
+            return self.classifier(ensemble_logits)
         elif self.ensemble_mode in ["vector_ensemble", "affine_vector_ensemble"]:
             # Weighted sum with learnable vector weights
             if self.ensemble_mode == "vector_ensemble":
-                weights = torch.softmax(self.vector_weights, dim=0)  # Convex: softmax normalization
+                weights = torch.softmax(
+                    self.vector_weights, dim=0
+                )  # Convex: softmax normalization
             else:  # affine_vector_ensemble
-                weights = self.vector_weights / self.vector_weights.sum(dim=0, keepdim=True)  # Affine: simple normalization
+                weights = self.vector_weights / self.vector_weights.sum(
+                    dim=0, keepdim=True
+                )  # Affine: simple normalization
             logits_stack = torch.stack(all_logits, dim=0)  # [N, batch, logit]
             # Weighted sum over N pipelines/images
             ensemble_logits = (logits_stack * weights.unsqueeze(1).unsqueeze(2)).sum(
                 dim=0
             )
-            return ensemble_logits
+            return self.classifier(ensemble_logits)
         elif self.ensemble_mode in ["matrix_ensemble", "affine_matrix_ensemble"]:
             # Weighted sum with learnable matrix weights (per logit scalar)
             if self.ensemble_mode == "matrix_ensemble":
@@ -435,15 +453,17 @@ class MultiplePipeline(nn.Module):
                 weights = torch.softmax(self.matrix_weights, dim=0)  # [N, logit]
             else:  # affine_matrix_ensemble
                 # Affine: simple normalization - weights can be negative
-                weights = self.matrix_weights / self.matrix_weights.sum(dim=0, keepdim=True)  # [N, logit]
+                weights = self.matrix_weights / self.matrix_weights.sum(
+                    dim=0, keepdim=True
+                )  # [N, logit]
             logits_stack = torch.stack(all_logits, dim=0)  # [N, batch, logit]
             # Apply element-wise weights to each scalar in each logit vector, then sum over N
             weighted_logits = logits_stack * weights.unsqueeze(1)  # [N, batch, logit]
             ensemble_logits = weighted_logits.sum(dim=0)  # [batch, logit]
-            return ensemble_logits
+            return self.classifier(ensemble_logits)
         else:
             # Return list of logits (for custom training loops that can handle multiple outputs)
-            return all_logits
+            return [self.classifier(logits) for logits in all_logits]
 
 
 class Pipeline(nn.Module):
