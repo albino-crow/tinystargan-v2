@@ -382,6 +382,9 @@ class MultiplePipeline(nn.Module):
             raise ValueError(f"Unknown conv_type: {conv_type}")
 
     # ...existing code...
+    def extract(self, x):
+        with torch.no_grad():  # freeze backbone
+            return self.backbone(x)
 
     def size_fixer(self, x):
         if self.resize_transform is not None:
@@ -423,7 +426,7 @@ class MultiplePipeline(nn.Module):
         # Extract features from all images
         all_logits = []
         for image in xs:
-            logits = self.feature_extractor(image)
+            logits = self.extract(image)
             all_logits.append(logits)
 
         if self.ensemble_mode == "ensemble":
