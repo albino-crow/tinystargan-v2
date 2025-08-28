@@ -323,6 +323,14 @@ class MultiplePipeline(nn.Module):
         # For matrix_ensemble: learnable weights for each scalar in each logit vector
         elif ensemble_mode in ["matrix_ensemble", "affine_matrix_ensemble"]:
             # Use provided num_output_features or try to get from feature_extractor
+            with torch.no_grad():
+                dummy_input = torch.zeros(1, 3, backbone_input_size, backbone_input_size)
+                dummy_output = feature_extractor(dummy_input)   # [1, L]
+                num_output_features = dummy_output.shape[-1]
+            
+            self.matrix_weights = nn.Parameter(
+                torch.ones(number_convex + int(include_image), num_output_features)
+)
             print(f"++++++++++{ensemble_mode}+++++++++++++++")
             num_output_features = feature_extractor.embedding_dim
             self.matrix_weights = nn.Parameter(
