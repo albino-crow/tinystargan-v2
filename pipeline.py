@@ -301,6 +301,91 @@ class LinearDomainPredictor(nn.Module):
         return domain_weights
 
 
+class AttentionModule(nn.Module):
+    """
+    Multi-head attention module for combining real and fake image features.
+    Supports three different attention modes.
+    """
+
+    def __init__(self, feature_dim, num_heads=8, dropout=0.1, use_residual=True):
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.num_heads = num_heads
+        self.head_dim = feature_dim // num_heads
+        self.use_residual = use_residual
+
+        assert feature_dim % num_heads == 0, (
+            "feature_dim must be divisible by num_heads"
+        )
+
+        # Linear transformations for Q, K, V
+        self.W_q = nn.Linear(feature_dim, feature_dim)
+        self.W_k = nn.Linear(feature_dim, feature_dim)
+        self.W_v = nn.Linear(feature_dim, feature_dim)
+
+        # Output projection
+        self.W_o = nn.Linear(feature_dim, feature_dim)
+
+        # Dropout
+        self.dropout = nn.Dropout(dropout)
+
+        # Layer norm - only create if using residual connections
+        if self.use_residual:
+            self.layer_norm = nn.LayerNorm(feature_dim)
+
+    def forward(self, query_features, key_features, value_features):
+        """
+        Args:
+            query_features: [batch_size, feature_dim]
+            key_features: [batch_size, num_images, feature_dim]
+            value_features: [batch_size, num_images, feature_dim]
+
+        Returns:
+            attended_features: [batch_size, feature_dim]
+        """
+        batch_size = query_features.size(0)
+
+        # Linear transformations
+        Q = self.W_q(query_features)  # [batch_size, feature_dim]
+        K = self.W_k(key_features)  # [batch_size, num_images, feature_dim]
+        V = self.W_v(value_features)  # [batch_size, num_images, feature_dim]
+
+        # Reshape for multi-head attention
+        Q = Q.view(batch_size, 1, self.num_heads, self.head_dim).transpose(
+            1, 2
+        )  # [batch_size, num_heads, 1, head_dim]
+        K = K.view(batch_size, -1, self.num_heads, self.head_dim).transpose(
+            1, 2
+        )  # [batch_size, num_heads, num_images, head_dim]
+        V = V.view(batch_size, -1, self.num_heads, self.head_dim).transpose(
+            1, 2
+        )  # [batch_size, num_heads, num_images, head_dim]
+
+        # Scaled dot-product attention
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / (
+            self.head_dim**0.5
+        )  # [batch_size, num_heads, 1, num_images]
+        attention_weights = F.softmax(scores, dim=-1)
+        attention_weights = self.dropout(attention_weights)
+
+        # Apply attention to values
+        attended = torch.matmul(
+            attention_weights, V
+        )  # [batch_size, num_heads, 1, head_dim]
+
+        # Concatenate heads and project
+        attended = (
+            attended.transpose(1, 2).contiguous().view(batch_size, self.feature_dim)
+        )  # [batch_size, feature_dim]
+        output = self.W_o(attended)
+
+        # Optional residual connection and layer norm
+        if self.use_residual:
+            output = self.layer_norm(output + query_features)
+
+        return output
+
+
 class MultiplePipeline(nn.Module):
     def __init__(
         self,
@@ -315,7 +400,8 @@ class MultiplePipeline(nn.Module):
         all_domain=False,
         number_convex=5,
         include_image=True,
-        ensemble_mode=None,  # New parameter to control output format
+        use_residual=True,
+        mode=None,  # New parameter to control output format
     ):
         super().__init__()
         self.generator = generator
@@ -328,28 +414,35 @@ class MultiplePipeline(nn.Module):
         self.classifier = OneLayerClassifier(
             input_dim=feature_extractor_embedding, num_classes=number_label
         )
-        self.ensemble_mode = (
-            ensemble_mode  # 'ensemble', 'vector_ensemble', 'matrix_ensemble', or None
-        )
+        self.mode = mode  # 'ensemble', 'vector_ensemble', 'matrix_ensemble', or None
+
         # For vector_ensemble: learnable weights for each logit vector
-        if ensemble_mode in ["vector_ensemble", "affine_vector_ensemble"]:
-            print(f"++++++++++{ensemble_mode}+++++++++++++++")
+        if self.mode in ["vector_ensemble", "affine_vector_ensemble"]:
+            print(f"++++++++++{self.mode}+++++++++++++++")
             self.vector_weights = nn.Parameter(
                 torch.ones(number_convex + int(include_image))
             )
         # For matrix_ensemble: learnable weights for each scalar in each logit vector
-        elif ensemble_mode in ["matrix_ensemble", "affine_matrix_ensemble"]:
+        elif self.mode in ["matrix_ensemble", "affine_matrix_ensemble"]:
             self.matrix_weights = nn.Parameter(
                 torch.ones(
                     number_convex + int(include_image), feature_extractor_embedding
                 )
             )
-            print(f"++++++++++{ensemble_mode}+++++++++++++++")
+            print(f"++++++++++{self.mode}+++++++++++++++")
             self.matrix_weights = nn.Parameter(
                 torch.ones(
                     number_convex + int(include_image), feature_extractor_embedding
                 )
             )
+        elif "attention" in self.mode:
+            print(f"++++++++++{self.mode}+++++++++++++++")
+            self.attention_module = AttentionModule(
+                feature_dim=feature_extractor_embedding,
+                num_heads=8,
+                use_residual=use_residual,
+            )
+
         self.resize_transform = (
             None
             if backbone_input_size is None
@@ -429,13 +522,58 @@ class MultiplePipeline(nn.Module):
             logits = self.extract(image)
             all_logits.append(logits)
 
-        if self.ensemble_mode == "ensemble":
+        if "attention" in self.mode:
+            # Stack fake features: [batch_size, num_fake_images, feature_dim]
+            if self.include_image:
+                # Last image is real (original), others are fake
+                real_logits = all_logits[-1]  # ✅ CORRECT - Last is real
+                fake_logits = all_logits[:-1]  # ✅ CORRECT - All others are fake
+            else:
+                # If no real image included, use first fake as query
+                real_logits = all_logits[0]
+                fake_logits = all_logits[1:]
+            fake_features_stack = torch.stack(fake_logits, dim=1)
+
+                
+            attended_features = None
+            if self.attention_mode == "attention_ff":
+                # Mode 1: Real image as query, fake images as both key and value
+                attended_features = self.attention_module(
+                    query_features=real_logits,
+                    key_features=fake_features_stack,
+                    value_features=fake_features_stack,
+                )
+
+            elif self.attention_mode == "attention_fr":
+                # Mode 2: Real image as query and value, fake images as key
+                real_features_stack = real_logits.unsqueeze(
+                    1
+                )  # [batch_size, 1, feature_dim]
+                attended_features = self.attention_module(
+                    query_features=real_logits,
+                    key_features=fake_features_stack,
+                    value_features=real_features_stack,
+                )
+
+            elif self.attention_mode == "attention_bb":
+                # Mode 3: Real image as query, both fake and real as key and value
+                all_features_stack = torch.cat(
+                    [fake_features_stack, real_logits.unsqueeze(1)], dim=1
+                )
+                attended_features = self.attention_module(
+                    query_features=real_logits,
+                    key_features=all_features_stack,
+                    value_features=all_features_stack,
+                )
+            return self.classifier(attended_features)
+
+        elif self.mode == "ensemble":
             # Simple average (sum) over all logits
             ensemble_logits = torch.stack(all_logits, dim=0).mean(dim=0)
             return self.classifier(ensemble_logits)
-        elif self.ensemble_mode in ["vector_ensemble", "affine_vector_ensemble"]:
+        elif self.mode in ["vector_ensemble", "affine_vector_ensemble"]:
             # Weighted sum with learnable vector weights
-            if self.ensemble_mode == "vector_ensemble":
+            if self.mode == "vector_ensemble":
                 weights = torch.softmax(
                     self.vector_weights, dim=0
                 )  # Convex: softmax normalization
@@ -449,9 +587,9 @@ class MultiplePipeline(nn.Module):
                 dim=0
             )
             return self.classifier(ensemble_logits)
-        elif self.ensemble_mode in ["matrix_ensemble", "affine_matrix_ensemble"]:
+        elif self.mode in ["matrix_ensemble", "affine_matrix_ensemble"]:
             # Weighted sum with learnable matrix weights (per logit scalar)
-            if self.ensemble_mode == "matrix_ensemble":
+            if self.mode == "matrix_ensemble":
                 # Convex: softmax normalization - weights across all pipelines sum to 1
                 weights = torch.softmax(self.matrix_weights, dim=0)  # [N, logit]
             else:  # affine_matrix_ensemble

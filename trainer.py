@@ -546,6 +546,7 @@ class Trainer:
         save_every_n_epochs=10,
         name="Trainer",
         mode="normal",  # New parameter for processing mode
+        description="Image data loader",
     ):
         """
         Initialize the trainer.
@@ -572,6 +573,7 @@ class Trainer:
         self.device = device
         self.checkpoint_dir = checkpoint_dir
         self.save_every_n_epochs = save_every_n_epochs
+        self.description = description
 
         # Create checkpoint directory
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -667,6 +669,7 @@ class Trainer:
 
     def train_epoch(self, epoch, num_epochs):
         """Train for one epoch using the configured mode."""
+        print(self.description)
         return train_one_epoch_with_mode(
             self.model,
             self.train_loader,

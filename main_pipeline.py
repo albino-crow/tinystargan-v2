@@ -95,7 +95,8 @@ def main(args):
             all_domain=args.all_domain,
             number_convex=args.number_convex,
             include_image=args.include_image,
-            ensemble_mode=args.loss_method,
+            use_residual=args.use_residual,
+            mode=args.loss_method,
         )
     pipeline.to(device)
     loss_method = (
@@ -107,6 +108,9 @@ def main(args):
             "matrix_ensemble",
             "affine_matrix_ensemble",
             "affine_vector_ensemble",
+            "attention_ff",
+            "attention_fr",
+            "attention_bb",
         ]
         else "normal"
     )
@@ -141,6 +145,7 @@ def main(args):
         save_every_n_epochs=args.save_every,
         name=args.checkpoint_dir,
         mode=loss_method,
+        description=f"Training pipeline with {args.loss_method} loss, weight generator {args.generator_checkpoint_dir}, location of weight {args.checkpoint_dir}",
     )
     trainer.train(num_epochs=args.total_epoch, resume_epoch=args.resume_iter)
 
@@ -312,6 +317,9 @@ if __name__ == "__main__":
             "matrix_ensemble",
             "affine_vector_ensemble",
             "affine_matrix_ensemble",
+            "attention_ff",
+            "attention_fr",
+            "attention_bb",
         ],
         help="This argument is used in trainer to choose the loss method",
     )
@@ -329,6 +337,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--include_image", type=str2bool, default=False, help="Enable fake guide"
+    )
+    parser.add_argument(
+        "--use_residual",
+        type=str2bool,
+        default=True,
+        help="Enable residual connections",
     )
     parser.add_argument("--number_convex", type=int, default=5)
 
