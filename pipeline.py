@@ -301,6 +301,97 @@ class LinearDomainPredictor(nn.Module):
         return domain_weights
 
 
+class SimpleAttention(nn.Module):
+    """
+    Simple attention module with independent normalization for each fake image.
+    Each fake image is normalized independently using its own running statistics.
+    """
+
+    def __init__(
+        self, feature_dim, num_fakes, hidden_dim=128, momentum=0.1, res_on=True
+    ):
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.num_fakes = num_fakes
+        self.hidden_dim = hidden_dim
+        self.momentum = momentum
+        self.res_on = res_on
+
+        # Running statistics for normalization - one set per fake image
+        self.register_buffer("running_mean", torch.zeros(num_fakes, feature_dim))
+        self.register_buffer("running_var", torch.ones(num_fakes, feature_dim))
+        self.register_buffer("num_batches_tracked", torch.tensor(0, dtype=torch.long))
+
+        # Neural network to transform query features
+        self.query_network = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, feature_dim),
+        )
+
+        # self.attention_network = nn.Sequential(
+        #     nn.Linear(feature_dim * 2, hidden_dim),  # Concat query + aggregated fakes
+        #     nn.ReLU(),
+        #     nn.Linear(hidden_dim, feature_dim)
+        # )
+
+    def forward(self, real_image_feature, fakes_image_vector):
+        """
+        Args:
+            real_image_feature: [batch_size, feature_dim] - query features
+            fakes_image_vector: [batch_size, num_fakes, feature_dim] - key features
+
+        Returns:
+            output_feature: [batch_size, feature_dim]
+        """
+
+        # Step 1: Normalize each fake image independently
+        if self.training:
+            # Update running statistics during training
+            # Compute statistics for each fake image independently across the batch dimension
+            batch_mean = fakes_image_vector.mean(dim=0)  # [num_fakes, feature_dim]
+            batch_var = fakes_image_vector.var(
+                dim=0, unbiased=False
+            )  # [num_fakes, feature_dim]
+
+            # Update running statistics for each fake image independently
+            self.num_batches_tracked += 1
+            self.running_mean = (
+                1 - self.momentum
+            ) * self.running_mean + self.momentum * batch_mean
+            self.running_var = (
+                1 - self.momentum
+            ) * self.running_var + self.momentum * batch_var
+
+            # Use batch statistics for normalization
+            normalized_fakes = (
+                fakes_image_vector - batch_mean.unsqueeze(0)
+            ) / torch.sqrt(batch_var.unsqueeze(0) + 1e-8)
+        else:
+            # Use running statistics during evaluation
+            normalized_fakes = (
+                fakes_image_vector - self.running_mean.unsqueeze(0)
+            ) / torch.sqrt(self.running_var.unsqueeze(0) + 1e-8)
+
+        # Step 2: Pass query (real image features) through neural network
+        aggregated_fakes = normalized_fakes.mean(dim=1)
+        transformed_query = self.query_network(
+            aggregated_fakes
+        )  # [batch_size, feature_dim]
+
+        # Step 3: Create output using real image vector and network result
+        # Simple combination: element-wise multiplication
+        output_feature = (
+            real_image_feature * transformed_query
+        )  # [batch_size, feature_dim]
+
+        # Step 4: Apply residual connection if enabled
+        if self.res_on:
+            output_feature = output_feature + real_image_feature
+
+        return output_feature
+
+
 class AttentionModule(nn.Module):
     """
     Multi-head attention module for combining real and fake image features.
@@ -424,11 +515,6 @@ class MultiplePipeline(nn.Module):
             )
         # For matrix_ensemble: learnable weights for each scalar in each logit vector
         elif self.mode in ["matrix_ensemble", "affine_matrix_ensemble"]:
-            self.matrix_weights = nn.Parameter(
-                torch.ones(
-                    number_convex + int(include_image), feature_extractor_embedding
-                )
-            )
             print(f"++++++++++{self.mode}+++++++++++++++")
             self.matrix_weights = nn.Parameter(
                 torch.ones(
@@ -441,6 +527,15 @@ class MultiplePipeline(nn.Module):
                 feature_dim=feature_extractor_embedding,
                 num_heads=8,
                 use_residual=use_residual,
+            )
+        elif "fake_guide" == self.mode:
+            print(f"++++++++++{self.mode}+++++++++++++++")
+            self.fake_guide = SimpleAttention(
+                feature_dim=feature_extractor_embedding,
+                num_fakes=number_convex,
+                hidden_dim=128,
+                momentum=0.1,
+                res_on=use_residual,
             )
 
         self.resize_transform = (
@@ -521,47 +616,60 @@ class MultiplePipeline(nn.Module):
         for image in xs:
             logits = self.extract(image)
             all_logits.append(logits)
-
-        if "attention" in self.mode:
-            # Stack fake features: [batch_size, num_fake_images, feature_dim]
+        if self.mode == "fake_guide":
             if self.include_image:
                 # Last image is real (original), others are fake
-                real_logits = all_logits[-1]  # ✅ CORRECT - Last is real
+                real = all_logits[-1]  # ✅ CORRECT - Last is real
                 fake_logits = all_logits[:-1]  # ✅ CORRECT - All others are fake
             else:
                 # If no real image included, use first fake as query
-                real_logits = all_logits[0]
-                fake_logits = all_logits[1:]
+                real = all_logits[0]
+                fake_logits = all_logits
+            fake_features_stack = torch.stack(
+                fake_logits, dim=1
+            )  # [batch_size, num_fakes, feature_dim]
+
+            return self.classifier(self.fake_guide(real, fake_features_stack))
+        elif "attention" in self.mode:
+            # Stack fake features: [batch_size, num_fake_images, feature_dim]
+            if self.include_image:
+                # Last image is real (original), others are fake
+                query_logits = all_logits[-1]  # ✅ CORRECT - Last is real
+                fake_logits = all_logits[:-1]  # ✅ CORRECT - All others are fake
+            else:
+                # If no real image included, use first fake as query
+                query_logits = all_logits[0]
+                fake_logits = all_logits
             fake_features_stack = torch.stack(fake_logits, dim=1)
 
-                
             attended_features = None
-            if self.attention_mode == "attention_ff":
+
+            if self.mode == "attention_ff":
                 # Mode 1: Real image as query, fake images as both key and value
                 attended_features = self.attention_module(
-                    query_features=real_logits,
+                    query_features=query_logits,
                     key_features=fake_features_stack,
                     value_features=fake_features_stack,
                 )
 
-            elif self.attention_mode == "attention_fr":
+            elif self.mode == "attention_fr":
                 # Mode 2: Real image as query and value, fake images as key
-                real_features_stack = real_logits.unsqueeze(
+                real_features_stack = query_logits.unsqueeze(
                     1
                 )  # [batch_size, 1, feature_dim]
                 attended_features = self.attention_module(
-                    query_features=real_logits,
+                    query_features=query_logits,
                     key_features=fake_features_stack,
                     value_features=real_features_stack,
                 )
 
-            elif self.attention_mode == "attention_bb":
+            elif self.mode == "attention_bb":
                 # Mode 3: Real image as query, both fake and real as key and value
                 all_features_stack = torch.cat(
-                    [fake_features_stack, real_logits.unsqueeze(1)], dim=1
+                    [fake_features_stack, query_logits.unsqueeze(1)], dim=1
                 )
                 attended_features = self.attention_module(
-                    query_features=real_logits,
+                    query_features=query_logits,
                     key_features=all_features_stack,
                     value_features=all_features_stack,
                 )

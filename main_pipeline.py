@@ -102,15 +102,10 @@ def main(args):
     loss_method = (
         args.loss_method
         if args.loss_method
-        not in [
-            "ensemble",
-            "vector_ensemble",
-            "matrix_ensemble",
-            "affine_matrix_ensemble",
-            "affine_vector_ensemble",
-            "attention_ff",
-            "attention_fr",
-            "attention_bb",
+         in [
+            "average",
+            "majority",
+            "leastrisk",
         ]
         else "normal"
     )
@@ -320,6 +315,7 @@ if __name__ == "__main__":
             "attention_ff",
             "attention_fr",
             "attention_bb",
+            "fake_guide",
         ],
         help="This argument is used in trainer to choose the loss method",
     )
