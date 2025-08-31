@@ -7,7 +7,6 @@ import torch.optim as optim
 from trainer import Trainer, create_data_loader
 from core.checkpoint import CheckpointIO
 from os.path import join as ospj
-from torchao.quantization import quantize_, float8_dynamic_quant
 
 from pipeline import (
     MultiplePipeline,
@@ -16,6 +15,7 @@ from pipeline import (
     FlexibleClassifier,
     StarGanV2Generator,
 )
+from torchao.quantization import quantize_, float8_weight_only
 
 
 def str2bool(v):
@@ -31,6 +31,7 @@ def str2bool(v):
 
 
 def main(args):
+    print("Creating backbone model...")
     backbone = timm.create_model(
         "hf-hub:1aurent/vit_small_patch8_224.lunit_dino",
         pretrained=True,
@@ -46,7 +47,7 @@ def main(args):
         print("\nOriginal model's first linear layer:")
         print(type(backbone.blocks[0].attn.qkv))
 
-        quantize_(backbone, float8_dynamic_quant())
+        quantize_(backbone, float8_weight_only())
 
         print("\nQuantized model's first linear layer:")
         print(type(backbone.blocks[0].attn.qkv))
