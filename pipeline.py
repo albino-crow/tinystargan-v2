@@ -398,12 +398,20 @@ class AttentionModule(nn.Module):
     Supports three different attention modes.
     """
 
-    def __init__(self, feature_dim, num_heads=8, dropout=0.1, use_residual=True):
+    def __init__(
+        self,
+        feature_dim,
+        num_heads=8,
+        dropout=0.1,
+        use_residual=True,
+        is_q_vector=True,
+    ):
         super().__init__()
         self.feature_dim = feature_dim
         self.num_heads = num_heads
         self.head_dim = feature_dim // num_heads
         self.use_residual = use_residual
+        self.is_q_vector = is_q_vector
 
         assert feature_dim % num_heads == 0, (
             "feature_dim must be divisible by num_heads"
@@ -440,18 +448,30 @@ class AttentionModule(nn.Module):
         """
         batch_size = query_features.size(0)
 
+        if self.is_q_vector:
+            # Q is a vector: [batch_size, feature_dim] -> [batch_size, 1, feature_dim]
+            query_input = query_features.unsqueeze(1)
+            num_queries = 1
+        else:
+            # Q is already a matrix: [batch_size, num_queries, feature_dim]
+            query_input = query_features
+            num_queries = query_input.size(1)
+
         # Linear transformations
-        Q = torch.matmul(query_features, self.W_q)  # [batch_size, feature_dim]
+        Q = torch.matmul(
+            query_input, self.W_q
+        )  # [batch_size, num_queries, feature_dim]
         K = torch.matmul(
             key_features, self.W_k
         )  # [batch_size, num_images, feature_dim]
         V = torch.matmul(
             value_features, self.W_v
         )  # [batch_size, num_images, feature_dim]
+
         # Reshape for multi-head attention
-        Q = Q.view(batch_size, 1, self.num_heads, self.head_dim).transpose(
+        Q = Q.view(batch_size, num_queries, self.num_heads, self.head_dim).transpose(
             1, 2
-        )  # [batch_size, num_heads, 1, head_dim]
+        )  # [batch_size, num_heads, num_queries, head_dim]
         K = K.view(batch_size, -1, self.num_heads, self.head_dim).transpose(
             1, 2
         )  # [batch_size, num_heads, num_images, head_dim]
@@ -460,31 +480,43 @@ class AttentionModule(nn.Module):
         )  # [batch_size, num_heads, num_images, head_dim]
 
         num_images = K.size(2)
-        Q = Q.repeat(1, 1, num_images, 1)
+
+        # Only repeat Q if it's a vector (is_q_vector=True)
+        if self.is_q_vector:
+            Q = Q.repeat(1, 1, num_images, 1)
+
         # Scaled dot-product attention
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / (
-            self.head_dim**0.5
-        )  # [batch_size, num_heads, num_images, num_images]
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim**0.5)
         attention_weights = F.softmax(scores, dim=-1)
         attention_weights = self.dropout(attention_weights)
 
         # Apply attention to values
-        attended = torch.matmul(
-            attention_weights, V
-        )  # [batch_size, num_heads, num_images, head_dim]
+        attended = torch.matmul(attention_weights, V)
 
-        # Sum or average across the num_images dimension to get back to single query result
-        attended = attended.mean(dim=2)  # [batch_size, num_heads, head_dim]
-
-        # Concatenate heads and project
-        attended = (
-            attended.transpose(1, 2).contiguous().view(batch_size, self.feature_dim)
-        )  # [batch_size, feature_dim]
-        output = self.W_o(attended)
-
-        # Optional residual connection and layer norm
-        if self.use_residual:
-            output = self.layer_norm(output + query_features)
+        if self.is_q_vector:
+            # Sum or average across the num_images dimension to get back to single query result
+            attended = attended.mean(dim=2)  # [batch_size, num_heads, head_dim]
+            # Concatenate heads and project
+            attended = (
+                attended.transpose(1, 2).contiguous().view(batch_size, self.feature_dim)
+            )
+            output = self.W_o(attended)
+            # Optional residual connection and layer norm
+            if self.use_residual:
+                output = self.layer_norm(output + query_features)
+        else:
+            # Keep the matrix structure: [batch_size, num_heads, num_queries, head_dim]
+            attended = (
+                attended.transpose(1, 2)
+                .contiguous()
+                .view(batch_size, num_queries, self.feature_dim)
+            )
+            output = self.W_o(attended)
+            # For matrix: apply layer norm and residual first, then average
+            if self.use_residual:
+                output = self.layer_norm(output + query_features)
+            # Then average to get vector output
+            output = output.mean(dim=1)  # [batch_size, feature_dim]
 
         return output
 
@@ -539,6 +571,7 @@ class MultiplePipeline(nn.Module):
                 feature_dim=feature_extractor_embedding,
                 num_heads=8,
                 use_residual=use_residual,
+                is_q_vector=self.mode in ["attention_m"],
             )
         elif "fake_guide" == self.mode:
             print(f"++++++++++{self.mode}+++++++++++++++")
@@ -697,6 +730,13 @@ class MultiplePipeline(nn.Module):
                     query_features=query_logits,
                     key_features=all_features_stack,
                     value_features=real_features_stack,
+                )
+            elif self.mode == "attention_m":
+                # Mode 5: Real image as query and key, fake images as value
+                attended_features = self.attention_module(
+                    query_features=query_logits,
+                    key_features=real_features_stack,
+                    value_features=fake_features_stack,
                 )
             return self.classifier(attended_features)
 
