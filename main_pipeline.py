@@ -54,7 +54,7 @@ def main(args):
             f"Has quantization metadata: {hasattr(backbone.blocks[0].attn.qkv.weight, '_quantized_dtype')}"
         )
 
-        quantize_(backbone, float8_weight_only())
+        quantize_(backbone, float16_weight_only())
 
         print("\nQuantized model's first linear layer:")
         print(f"Type: {type(backbone.blocks[0].attn.qkv)}")
