@@ -732,10 +732,10 @@ class MultiplePipeline(nn.Module):
                     value_features=real_features_stack,
                 )
             elif self.mode == "attention_m":
-                # Mode 5: Real image as query and key, fake images as value
+                # Mode 5: fake image as query and key, fake images as value
                 attended_features = self.attention_module(
                     query_features=fake_features_stack,
-                    key_features=real_features_stack,
+                    key_features=fake_features_stack,
                     value_features=fake_features_stack,
                 )
             return self.classifier(attended_features)
