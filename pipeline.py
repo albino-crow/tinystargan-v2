@@ -459,17 +459,22 @@ class AttentionModule(nn.Module):
             1, 2
         )  # [batch_size, num_heads, num_images, head_dim]
 
+        num_images = K.size(2)
+        Q = Q.repeat(1, 1, num_images, 1)
         # Scaled dot-product attention
         scores = torch.matmul(Q, K.transpose(-2, -1)) / (
             self.head_dim**0.5
-        )  # [batch_size, num_heads, 1, num_images]
+        )  # [batch_size, num_heads, num_images, num_images]
         attention_weights = F.softmax(scores, dim=-1)
         attention_weights = self.dropout(attention_weights)
 
         # Apply attention to values
         attended = torch.matmul(
             attention_weights, V
-        )  # [batch_size, num_heads, 1, head_dim]
+        )  # [batch_size, num_heads, num_images, head_dim]
+
+        # Sum or average across the num_images dimension to get back to single query result
+        attended = attended.mean(dim=2)  # [batch_size, num_heads, head_dim]
 
         # Concatenate heads and project
         attended = (

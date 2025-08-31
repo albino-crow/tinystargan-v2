@@ -7,6 +7,7 @@ import torch.optim as optim
 from trainer import Trainer, create_data_loader
 from core.checkpoint import CheckpointIO
 from os.path import join as ospj
+from torchao.quantization import quantize_, float8_dynamic_quant
 
 from pipeline import (
     MultiplePipeline,
@@ -41,6 +42,14 @@ def main(args):
         "cuda" if torch.cuda.is_available() else "cpu",
         "<-----------------------------------",
     )
+    if args.quantized:
+        print("\nOriginal model's first linear layer:")
+        print(type(backbone.blocks[0].attn.qkv))
+
+        quantize_(backbone, float8_dynamic_quant())
+
+        print("\nQuantized model's first linear layer:")
+        print(type(backbone.blocks[0].attn.qkv))
     print("setup:", print(" ".join(f"{k}={v}" for k, v in vars(args).items())))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args.mode == "forward" and args.loss_method != "normal":
@@ -335,6 +344,10 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--include_image", type=str2bool, default=False, help="Enable fake guide"
+    )
+
+    parser.add_argument(
+        "--quantized", type=str2bool, default=False, help="Enable quantized model"
     )
     parser.add_argument(
         "--use_residual",
