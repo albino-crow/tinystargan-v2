@@ -479,11 +479,6 @@ class AttentionModule(nn.Module):
             1, 2
         )  # [batch_size, num_heads, num_images, head_dim]
 
-        num_images = K.size(2)
-
-        # Only repeat Q if it's a vector (is_q_vector=True)
-        if self.is_q_vector:
-            Q = Q.repeat(1, 1, num_images, 1)
 
         # Scaled dot-product attention
         scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim**0.5)
@@ -494,7 +489,7 @@ class AttentionModule(nn.Module):
         attended = torch.matmul(attention_weights, V)
 
         if self.is_q_vector:
-            # Sum or average across the num_images dimension to get back to single query result
+            # For vector queries, average across the attention dimension
             attended = attended.mean(dim=2)  # [batch_size, num_heads, head_dim]
             # Concatenate heads and project
             attended = (
