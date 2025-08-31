@@ -628,25 +628,41 @@ class MultiplePipeline(nn.Module):
 
         if self.all_domain is False:
             for model in self.convex_models:
+                
                 domain_weights = model(x)
                 weighted_style_code = torch.matmul(
                     domain_weights, self.style_codes_tensor
                 )
-
+                if self.quantized:
+                    x_input = x.half()
+                    weighted_style_code = weighted_style_code.half()
+                else:
+                    x_input = x
+                
                 fake_images = self.generator.generate_with_style_code(
-                    x, weighted_style_code
+                    x_input, weighted_style_code
                 )
                 fake_images = self.size_fixer(fake_images)
                 xs.append(fake_images)
         else:
+            if self.quantized:
+                    x = x.half()
             for i in range(self.number_domain):
-                fake_images = self.generator.generate_with_style_code(
-                    x, self.style_codes_tensor[i]
-                )
+                if self.quantized:
+                    fake_images = self.generator.generate_with_style_code(
+                        x, self.style_codes_tensor[i].half()
+                    )
+                else:
+                    fake_images = self.generator.generate_with_style_code(
+                        x, self.style_codes_tensor[i]
+                    )
                 fake_images = self.size_fixer(fake_images)
                 xs.append(fake_images)
+        if self.quantized:
+                    x = x.half()
 
         if self.include_image:
+            
             # Convert x from [-1, 1] to [0, 1] range to match fake_images
             original_images = (self.size_fixer(x) + 1.0) / 2.0
             xs.append(original_images)
@@ -654,11 +670,11 @@ class MultiplePipeline(nn.Module):
         # Extract features from all images
         all_logits = []
         for image in xs:
+            logits = self.extract(image)
+
             if self.quantized:
-                image = image.half()
-                logits = self.extract(image).float()
-            else:
-                logits = self.extract(image)
+
+                logits = logits.float()
             all_logits.append(logits)
         if self.mode == "fake_guide":
             if self.include_image:

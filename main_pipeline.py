@@ -45,31 +45,6 @@ def main(args):
         "cuda" if torch.cuda.is_available() else "cpu",
         "<-----------------------------------",
     )
-    if args.quantized:
-        print("\nOriginal model's first linear layer:")
-        print(f"Type: {type(backbone.blocks[0].attn.qkv)}")
-        print(f"Weight dtype: {backbone.blocks[0].attn.qkv.weight.dtype}")
-        print(f"Weight shape: {backbone.blocks[0].attn.qkv.weight.shape}")
-        print(
-            f"Has quantization metadata: {hasattr(backbone.blocks[0].attn.qkv.weight, '_quantized_dtype')}"
-        )
-
-        backbone.half()
-
-        print("\nQuantized model's first linear layer:")
-        print(f"Type: {type(backbone.blocks[0].attn.qkv)}")
-        print(f"Weight dtype: {backbone.blocks[0].attn.qkv.weight.dtype}")
-        print(f"Weight shape: {backbone.blocks[0].attn.qkv.weight.shape}")
-        print(
-            f"Has quantization metadata: {hasattr(backbone.blocks[0].attn.qkv.weight, '_quantized_dtype')}"
-        )
-
-        # Check if weight is a quantized tensor
-        if hasattr(backbone.blocks[0].attn.qkv.weight, "__tensor_flatten__"):
-            print("Weight is a quantized tensor")
-
-        # Show actual tensor implementation
-        print(f"Weight tensor type: {type(backbone.blocks[0].attn.qkv.weight)}")
     print("setup:", print(" ".join(f"{k}={v}" for k, v in vars(args).items())))
     if args.mode == "forward" and args.loss_method != "normal":
         raise NotImplementedError("there is no such action available for this task")
@@ -95,7 +70,36 @@ def main(args):
             nets_ema.mapping_network, args.num_domains, args.latent_dim, seed=args.seed
         )
         generator = StarGanV2Generator(nets_ema.generator)
+    
 
+    if args.quantized:
+        print("\nOriginal model's first linear layer:")
+        print(f"Type: {type(backbone.blocks[0].attn.qkv)}")
+        print(f"Weight dtype: {backbone.blocks[0].attn.qkv.weight.dtype}")
+        print(f"Weight shape: {backbone.blocks[0].attn.qkv.weight.shape}")
+        print(
+            f"Has quantization metadata: {hasattr(backbone.blocks[0].attn.qkv.weight, '_quantized_dtype')}"
+        )
+
+        backbone.half()
+        if generator is not None:
+            generator = generator.to(device).half()
+            
+        print("\nQuantized model's first linear layer:")
+        print(f"Type: {type(backbone.blocks[0].attn.qkv)}")
+        print(f"Weight dtype: {backbone.blocks[0].attn.qkv.weight.dtype}")
+        print(f"Weight shape: {backbone.blocks[0].attn.qkv.weight.shape}")
+        print(
+            f"Has quantization metadata: {hasattr(backbone.blocks[0].attn.qkv.weight, '_quantized_dtype')}"
+        )
+
+        # Check if weight is a quantized tensor
+        if hasattr(backbone.blocks[0].attn.qkv.weight, "__tensor_flatten__"):
+            print("Weight is a quantized tensor")
+
+        # Show actual tensor implementation
+        print(f"Weight tensor type: {type(backbone.blocks[0].attn.qkv.weight)}")
+    
     pipeline = None
     if args.loss_method == "normal":
         pipeline = Pipeline(
