@@ -15,7 +15,7 @@ from pipeline import (
     FlexibleClassifier,
     StarGanV2Generator,
 )
-from torchao.quantization import quantize_, float8_weight_only
+from torchao.quantization import quantize_, float16_weight_only
 
 
 def str2bool(v):
