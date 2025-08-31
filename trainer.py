@@ -588,6 +588,7 @@ class Trainer:
         # Track best model
         self.best_val_acc = 0.0
         self.best_val_loss = float("inf")
+        self.test_with_best_val = 0.0
         self.best_epoch = 0
 
         # Training history
@@ -598,7 +599,7 @@ class Trainer:
             "val_acc": [],
         }
 
-    def save_best_model(self, val_loss, val_acc, epoch):
+    def save_best_model(self, val_loss, val_acc,test_acc, epoch):
         """Save model if it's the best so far."""
         is_best = val_acc > self.best_val_acc
 
@@ -606,7 +607,7 @@ class Trainer:
             self.best_val_acc = val_acc
             self.best_val_loss = val_loss
             self.best_epoch = epoch
-
+            self.test_with_best_val = test_acc
             # Save best model
             best_path = os.path.join(self.checkpoint_dir, "best_model.ckpt")
             print(f"New best model! Saving to {best_path}")
@@ -737,7 +738,7 @@ class Trainer:
             self.train_history["val_acc"].append(val_acc)
 
             # Save best model
-            self.save_best_model(val_loss, val_acc, epoch + 1)
+            self.save_best_model(val_loss, val_acc, test_acc, epoch + 1)
 
             # Save current model every n epochs
             if (epoch + 1) % self.save_every_n_epochs == 0:
@@ -749,7 +750,7 @@ class Trainer:
             print(f"Val   - Loss: {val_loss:.4f}, Acc: {val_acc:.4f}")
             print(f"cheat test - Loss: {test_loss:.4f}, Acc: {test_acc:.4f}")
             print(
-                f"Best Val Acc so far: {self.best_val_acc:.4f} (Epoch {self.best_epoch})"
+                f"Best Val Acc so far: {self.best_val_acc:.4f}, respected test Acc: {self.test_with_best_val:.4f} (Epoch {self.best_epoch})"
             )
 
         # Save final model

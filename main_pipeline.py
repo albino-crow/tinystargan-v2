@@ -102,7 +102,7 @@ def main(args):
     loss_method = (
         args.loss_method
         if args.loss_method
-         in [
+        in [
             "average",
             "majority",
             "leastrisk",
@@ -316,6 +316,7 @@ if __name__ == "__main__":
             "attention_fr",
             "attention_bb",
             "fake_guide",
+            "attention_br",
         ],
         help="This argument is used in trainer to choose the loss method",
     )

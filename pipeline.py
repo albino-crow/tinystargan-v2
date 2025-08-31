@@ -410,9 +410,13 @@ class AttentionModule(nn.Module):
         )
 
         # Linear transformations for Q, K, V
-        self.W_q = nn.Linear(feature_dim, feature_dim)
-        self.W_k = nn.Linear(feature_dim, feature_dim)
-        self.W_v = nn.Linear(feature_dim, feature_dim)
+        self.W_q = nn.Parameter(torch.randn(feature_dim, feature_dim))
+        self.W_k = nn.Parameter(torch.randn(feature_dim, feature_dim))
+        self.W_v = nn.Parameter(torch.randn(feature_dim, feature_dim))
+
+        nn.init.xavier_uniform_(self.W_q)
+        nn.init.xavier_uniform_(self.W_k)
+        nn.init.xavier_uniform_(self.W_v)
 
         # Output projection
         self.W_o = nn.Linear(feature_dim, feature_dim)
@@ -437,10 +441,13 @@ class AttentionModule(nn.Module):
         batch_size = query_features.size(0)
 
         # Linear transformations
-        Q = self.W_q(query_features)  # [batch_size, feature_dim]
-        K = self.W_k(key_features)  # [batch_size, num_images, feature_dim]
-        V = self.W_v(value_features)  # [batch_size, num_images, feature_dim]
-
+        Q = torch.matmul(query_features, self.W_q)  # [batch_size, feature_dim]
+        K = torch.matmul(
+            key_features, self.W_k
+        )  # [batch_size, num_images, feature_dim]
+        V = torch.matmul(
+            value_features, self.W_v
+        )  # [batch_size, num_images, feature_dim]
         # Reshape for multi-head attention
         Q = Q.view(batch_size, 1, self.num_heads, self.head_dim).transpose(
             1, 2
@@ -672,6 +679,19 @@ class MultiplePipeline(nn.Module):
                     query_features=query_logits,
                     key_features=all_features_stack,
                     value_features=all_features_stack,
+                )
+            elif self.mode == "attention_br":
+                # Mode 4: Real image as query, both fake and real as key, real as value
+                all_features_stack = torch.cat(
+                    [fake_features_stack, query_logits.unsqueeze(1)], dim=1
+                )
+                real_features_stack = query_logits.unsqueeze(
+                    1
+                )  # [batch_size, 1, feature_dim]
+                attended_features = self.attention_module(
+                    query_features=query_logits,
+                    key_features=all_features_stack,
+                    value_features=real_features_stack,
                 )
             return self.classifier(attended_features)
 
