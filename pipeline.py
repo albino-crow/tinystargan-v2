@@ -479,7 +479,6 @@ class AttentionModule(nn.Module):
             1, 2
         )  # [batch_size, num_heads, num_images, head_dim]
 
-
         # Scaled dot-product attention
         scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim**0.5)
         attention_weights = F.softmax(scores, dim=-1)
@@ -532,6 +531,7 @@ class MultiplePipeline(nn.Module):
         include_image=True,
         use_residual=True,
         mode=None,  # New parameter to control output format
+        quantized=False,
     ):
         super().__init__()
         self.generator = generator
@@ -545,7 +545,7 @@ class MultiplePipeline(nn.Module):
             input_dim=feature_extractor_embedding, num_classes=number_label
         )
         self.mode = mode  # 'ensemble', 'vector_ensemble', 'matrix_ensemble', or None
-
+        self.quantized = quantized
         # For vector_ensemble: learnable weights for each logit vector
         if self.mode in ["vector_ensemble", "affine_vector_ensemble"]:
             print(f"++++++++++{self.mode}+++++++++++++++")
@@ -654,7 +654,11 @@ class MultiplePipeline(nn.Module):
         # Extract features from all images
         all_logits = []
         for image in xs:
-            logits = self.extract(image)
+            if self.quantized:
+                image = image.half()
+                logits = self.extract(image).float()
+            else:
+                logits = self.extract(image)
             all_logits.append(logits)
         if self.mode == "fake_guide":
             if self.include_image:

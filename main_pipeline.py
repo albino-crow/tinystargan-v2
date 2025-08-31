@@ -95,6 +95,7 @@ def main(args):
             nets_ema.mapping_network, args.num_domains, args.latent_dim, seed=args.seed
         )
         generator = StarGanV2Generator(nets_ema.generator)
+
     pipeline = None
     if args.loss_method == "normal":
         pipeline = Pipeline(
@@ -126,6 +127,7 @@ def main(args):
             include_image=args.include_image,
             use_residual=args.use_residual,
             mode=args.loss_method,
+            quantized=args.quantized,
         )
     pipeline.to(device)
     loss_method = (
