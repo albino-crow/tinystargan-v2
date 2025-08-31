@@ -36,6 +36,8 @@ def main(args):
         "hf-hub:1aurent/vit_small_patch8_224.lunit_dino",
         pretrained=True,
     )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    backbone = backbone.to(device)
     generator = None
     style_codes = None
     print(
@@ -48,24 +50,27 @@ def main(args):
         print(f"Type: {type(backbone.blocks[0].attn.qkv)}")
         print(f"Weight dtype: {backbone.blocks[0].attn.qkv.weight.dtype}")
         print(f"Weight shape: {backbone.blocks[0].attn.qkv.weight.shape}")
-        print(f"Has quantization metadata: {hasattr(backbone.blocks[0].attn.qkv.weight, '_quantized_dtype')}")
-    
+        print(
+            f"Has quantization metadata: {hasattr(backbone.blocks[0].attn.qkv.weight, '_quantized_dtype')}"
+        )
+
         quantize_(backbone, float8_weight_only())
-    
+
         print("\nQuantized model's first linear layer:")
         print(f"Type: {type(backbone.blocks[0].attn.qkv)}")
         print(f"Weight dtype: {backbone.blocks[0].attn.qkv.weight.dtype}")
         print(f"Weight shape: {backbone.blocks[0].attn.qkv.weight.shape}")
-        print(f"Has quantization metadata: {hasattr(backbone.blocks[0].attn.qkv.weight, '_quantized_dtype')}")
-        
+        print(
+            f"Has quantization metadata: {hasattr(backbone.blocks[0].attn.qkv.weight, '_quantized_dtype')}"
+        )
+
         # Check if weight is a quantized tensor
-        if hasattr(backbone.blocks[0].attn.qkv.weight, '__tensor_flatten__'):
+        if hasattr(backbone.blocks[0].attn.qkv.weight, "__tensor_flatten__"):
             print("Weight is a quantized tensor")
-        
+
         # Show actual tensor implementation
         print(f"Weight tensor type: {type(backbone.blocks[0].attn.qkv.weight)}")
     print("setup:", print(" ".join(f"{k}={v}" for k, v in vars(args).items())))
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args.mode == "forward" and args.loss_method != "normal":
         raise NotImplementedError("there is no such action available for this task")
     if args.mode == "star":
