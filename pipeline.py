@@ -566,7 +566,7 @@ class MultiplePipeline(nn.Module):
                 feature_dim=feature_extractor_embedding,
                 num_heads=8,
                 use_residual=use_residual,
-                is_q_vector=self.mode in ["attention_m"],
+                is_q_vector=self.mode not in ["attention_m"],
             )
         elif "fake_guide" == self.mode:
             print(f"++++++++++{self.mode}+++++++++++++++")
