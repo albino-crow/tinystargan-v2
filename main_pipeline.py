@@ -41,6 +41,7 @@ def main(args):
         "cuda" if torch.cuda.is_available() else "cpu",
         "<-----------------------------------",
     )
+    print("setup:", print(" ".join(f"{k}={v}" for k, v in vars(args).items())))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args.mode == "forward" and args.loss_method != "normal":
         raise NotImplementedError("there is no such action available for this task")
