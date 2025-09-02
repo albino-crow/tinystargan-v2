@@ -70,7 +70,6 @@ def main(args):
             nets_ema.mapping_network, args.num_domains, args.latent_dim, seed=args.seed
         )
         generator = StarGanV2Generator(nets_ema.generator)
-    
 
     if args.quantized:
         print("\nOriginal model's first linear layer:")
@@ -84,7 +83,7 @@ def main(args):
         backbone.half()
         if generator is not None:
             generator = generator.to(device).half()
-            
+
         print("\nQuantized model's first linear layer:")
         print(f"Type: {type(backbone.blocks[0].attn.qkv)}")
         print(f"Weight dtype: {backbone.blocks[0].attn.qkv.weight.dtype}")
@@ -99,7 +98,7 @@ def main(args):
 
         # Show actual tensor implementation
         print(f"Weight tensor type: {type(backbone.blocks[0].attn.qkv.weight)}")
-    
+
     pipeline = None
     if args.loss_method == "normal":
         pipeline = Pipeline(
@@ -163,6 +162,7 @@ def main(args):
 
     # Create loss function based on number of labels
     criterion = nn.CrossEntropyLoss()
+    print("number of parameters:", sum(p.numel() for p in pipeline.parameters()))
     trainer = Trainer(
         model=pipeline,
         train_loader=train_loader,
