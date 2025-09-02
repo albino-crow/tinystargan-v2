@@ -530,8 +530,8 @@ class MultiplePipeline(nn.Module):
         number_convex=5,
         include_image=True,
         use_residual=True,
+        precision="float32",
         mode=None,  # New parameter to control output format
-        quantized=False,
     ):
         super().__init__()
         self.generator = generator
@@ -544,8 +544,8 @@ class MultiplePipeline(nn.Module):
         self.classifier = OneLayerClassifier(
             input_dim=feature_extractor_embedding, num_classes=number_label
         )
+        self.precision = precision
         self.mode = mode  # 'ensemble', 'vector_ensemble', 'matrix_ensemble', or None
-        self.quantized = quantized
         # For vector_ensemble: learnable weights for each logit vector
         if self.mode in ["vector_ensemble", "affine_vector_ensemble"]:
             print(f"++++++++++{self.mode}+++++++++++++++")
@@ -608,11 +608,17 @@ class MultiplePipeline(nn.Module):
             )
         else:
             raise ValueError(f"Unknown conv_type: {conv_type}")
-        
-        
-        print("backbone parameters :",sum(p.numel() for p in feature_extractor.parameters()))
-        print("generator parameters :",sum(p.numel() for p in self.generator.parameters()))
-        print("pipeline parameters :",sum(p.numel() for p in self.parameters()))
+
+        print(
+            "backbone parameters :",
+            sum(p.numel() for p in feature_extractor.parameters()),
+        )
+        print(
+            "generator parameters :",
+            sum(p.numel() for p in self.generator.parameters()),
+        )
+        print("pipeline parameters :", sum(p.numel() for p in self.parameters()))
+
     # ...existing code...
     def extract(self, x):
         with torch.no_grad():  # freeze backbone
@@ -628,45 +634,31 @@ class MultiplePipeline(nn.Module):
         # Extract domain weights from input image
 
         # Store all generated images
+        # Apply input precision (INT8 models still need float inputs)
+
         xs = []
 
         if self.all_domain is False:
             for model in self.convex_models:
-                
                 domain_weights = model(x)
                 weighted_style_code = torch.matmul(
                     domain_weights, self.style_codes_tensor
                 )
-                if self.quantized:
-                    x_input = x.half()
-                    weighted_style_code = weighted_style_code.half()
-                else:
-                    x_input = x
-                
+
                 fake_images = self.generator.generate_with_style_code(
-                    x_input, weighted_style_code
+                    x, weighted_style_code
                 )
                 fake_images = self.size_fixer(fake_images)
                 xs.append(fake_images)
         else:
-            if self.quantized:
-                    x = x.half()
             for i in range(self.number_domain):
-                if self.quantized:
-                    fake_images = self.generator.generate_with_style_code(
-                        x, self.style_codes_tensor[i].half()
-                    )
-                else:
-                    fake_images = self.generator.generate_with_style_code(
-                        x, self.style_codes_tensor[i]
-                    )
+                fake_images = self.generator.generate_with_style_code(
+                    x, self.style_codes_tensor[i]
+                )
                 fake_images = self.size_fixer(fake_images)
                 xs.append(fake_images)
-        if self.quantized:
-                    x = x.half()
 
         if self.include_image:
-            
             # Convert x from [-1, 1] to [0, 1] range to match fake_images
             original_images = (self.size_fixer(x) + 1.0) / 2.0
             xs.append(original_images)
@@ -675,10 +667,6 @@ class MultiplePipeline(nn.Module):
         all_logits = []
         for image in xs:
             logits = self.extract(image)
-
-            if self.quantized:
-
-                logits = logits.float()
             all_logits.append(logits)
         if self.mode == "fake_guide":
             if self.include_image:

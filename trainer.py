@@ -630,7 +630,7 @@ class Trainer:
         optimizer,
         device,
         checkpoint_dir="checkpoints",
-        save_every_n_epochs=10,
+        save_every_n_epochs=2,
         name="Trainer",
         mode="normal",  # New parameter for processing mode
         description="Image data loader",

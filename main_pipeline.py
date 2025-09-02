@@ -7,7 +7,7 @@ import torch.optim as optim
 from trainer import Trainer, create_data_loader
 from core.checkpoint import CheckpointIO
 from os.path import join as ospj
-
+from torch.ao.quantization import quantize_dynamic
 from pipeline import (
     MultiplePipeline,
     create_fixed_domain_style_codes,
@@ -28,6 +28,38 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError(f"Boolean value expected, got: {v}")
+
+
+def apply_model_precision(model, precision, device):
+    """Apply the specified precision to the model."""
+    print(f"\nApplying {precision} precision to model...")
+
+    if precision == "float16":
+        model = model.half()
+        print("✓ Model converted to float16 (FP16)")
+
+    elif precision == "int8":
+        # Dynamic quantization for INT8
+        try:
+            # Set model to evaluation mode for quantization
+            model.eval()
+
+            # Apply dynamic quantization to linear and conv layers
+            model = quantize_dynamic(
+                model, {torch.nn.Linear, torch.nn.Conv2d}, dtype=torch.qint8
+            )
+            print("✓ Model quantized to INT8 using dynamic quantization")
+
+        except Exception as e:
+            print(f"⚠ INT8 quantization failed: {e}")
+            print("Falling back to float16...")
+            model = model.half()
+
+    elif precision == "float32":
+        model = model.float()
+        print("✓ Model kept in float32 (FP32)")
+
+    return model.to(device)
 
 
 def main(args):
@@ -71,34 +103,15 @@ def main(args):
         )
         generator = StarGanV2Generator(nets_ema.generator)
 
-    if args.quantized:
-        print("\nOriginal model's first linear layer:")
-        print(f"Type: {type(backbone.blocks[0].attn.qkv)}")
-        print(f"Weight dtype: {backbone.blocks[0].attn.qkv.weight.dtype}")
-        print(f"Weight shape: {backbone.blocks[0].attn.qkv.weight.shape}")
-        print(
-            f"Has quantization metadata: {hasattr(backbone.blocks[0].attn.qkv.weight, '_quantized_dtype')}"
-        )
+    # Handle backward compatibility and apply precision
 
-        backbone.half()
-        if generator is not None:
-            generator = generator.to(device).half()
+    # Print original model info for debugging
+    print("\nOriginal backbone model info:")
+    print(f"Type: {type(backbone.blocks[0].attn.qkv)}")
+    print(f"Weight dtype: {backbone.blocks[0].attn.qkv.weight.dtype}")
+    print(f"Weight shape: {backbone.blocks[0].attn.qkv.weight.shape}")
 
-        print("\nQuantized model's first linear layer:")
-        print(f"Type: {type(backbone.blocks[0].attn.qkv)}")
-        print(f"Weight dtype: {backbone.blocks[0].attn.qkv.weight.dtype}")
-        print(f"Weight shape: {backbone.blocks[0].attn.qkv.weight.shape}")
-        print(
-            f"Has quantization metadata: {hasattr(backbone.blocks[0].attn.qkv.weight, '_quantized_dtype')}"
-        )
-
-        # Check if weight is a quantized tensor
-        if hasattr(backbone.blocks[0].attn.qkv.weight, "__tensor_flatten__"):
-            print("Weight is a quantized tensor")
-
-        # Show actual tensor implementation
-        print(f"Weight tensor type: {type(backbone.blocks[0].attn.qkv.weight)}")
-
+    # Create pipeline first with original precision models
     pipeline = None
     if args.loss_method == "normal":
         pipeline = Pipeline(
@@ -130,9 +143,13 @@ def main(args):
             include_image=args.include_image,
             use_residual=args.use_residual,
             mode=args.loss_method,
-            quantized=args.quantized,
+            precision=args.precision,
         )
+
+    # Move to device and apply precision once to the complete pipeline
     pipeline.to(device)
+    pipeline = apply_model_precision(pipeline, args.precision, device)
+
     loss_method = (
         args.loss_method
         if args.loss_method
@@ -177,6 +194,7 @@ def main(args):
         mode=loss_method,
         description=f"Training pipeline with {args.loss_method} loss, weight generator {args.generator_checkpoint_dir}, location of weight {args.checkpoint_dir}",
     )
+    
     trainer.train(num_epochs=args.total_epoch, resume_epoch=args.resume_iter)
 
 
@@ -373,7 +391,11 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--quantized", type=str2bool, default=False, help="Enable quantized model"
+        "--precision",
+        type=str,
+        default="float32",
+        choices=["float32", "float16", "int8"],
+        help="Model precision: float32, float16, or int8",
     )
     parser.add_argument(
         "--use_residual",
