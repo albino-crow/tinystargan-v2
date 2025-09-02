@@ -1,5 +1,6 @@
 import torch
 import os
+import time
 from tqdm import tqdm
 from core.checkpoint import CheckpointIO
 from torchvision import transforms
@@ -153,8 +154,11 @@ def train_one_epoch_with_mode(
     running_corrects = 0
     num_batches = 0
     total_samples = 0
+    iteration_times = []  # Track iteration times
 
     for images, labels in loop:
+        iteration_start_time = time.time()  # Start timing iteration
+
         images, labels = images.to(device), labels.to(device)
 
         optimizer.zero_grad()
@@ -196,9 +200,17 @@ def train_one_epoch_with_mode(
 
         num_batches += 1
 
-        # Update tqdm bar with running loss and accuracy
+        # Calculate iteration time
+        iteration_end_time = time.time()
+        iteration_time = iteration_end_time - iteration_start_time
+        iteration_times.append(iteration_time)
+
+        # Update tqdm bar with running loss, accuracy, and average iteration time
+        avg_iteration_time = sum(iteration_times) / len(iteration_times)
         loop.set_postfix(
-            loss=running_loss / num_batches, accuracy=running_corrects / total_samples
+            loss=running_loss / num_batches,
+            accuracy=running_corrects / total_samples,
+            avg_iter_time=f"{avg_iteration_time:.3f}s",
         )
 
         # Clear GPU memory cache after each batch
@@ -206,8 +218,10 @@ def train_one_epoch_with_mode(
 
     epoch_loss = running_loss / num_batches
     epoch_acc = running_corrects / total_samples
+    avg_iteration_time = sum(iteration_times) / len(iteration_times)
+
     print(
-        f"Train Epoch [{epoch + 1}/{num_epochs}] ({mode_str}) Loss: {epoch_loss:.4f}, Acc: {epoch_acc:.4f}"
+        f"Train Epoch [{epoch + 1}/{num_epochs}] ({mode_str}) Loss: {epoch_loss:.4f}, Acc: {epoch_acc:.4f}, Avg Iter Time: {avg_iteration_time:.3f}s"
     )
     return epoch_loss, epoch_acc
 
@@ -229,11 +243,14 @@ def validate_one_epoch_with_mode(
     running_corrects = 0
     num_batches = 0
     total_samples = 0
+    iteration_times = []  # Track iteration times
 
     loop = tqdm(
         val_loader, desc=f"Val [{epoch + 1}/{num_epochs}] ({mode_str})", leave=False
     )
     for images, labels in loop:
+        iteration_start_time = time.time()  # Start timing iteration
+
         images, labels = images.to(device), labels.to(device)
 
         outputs = model(images)
@@ -267,8 +284,17 @@ def validate_one_epoch_with_mode(
         total_samples += labels.size(0)
         num_batches += 1
 
+        # Calculate iteration time
+        iteration_end_time = time.time()
+        iteration_time = iteration_end_time - iteration_start_time
+        iteration_times.append(iteration_time)
+
+        # Update tqdm bar with running loss, accuracy, and average iteration time
+        avg_iteration_time = sum(iteration_times) / len(iteration_times)
         loop.set_postfix(
-            loss=running_loss / num_batches, accuracy=running_corrects / total_samples
+            loss=running_loss / num_batches,
+            accuracy=running_corrects / total_samples,
+            avg_iter_time=f"{avg_iteration_time:.3f}s",
         )
 
         # Clear GPU memory cache after each batch
@@ -276,8 +302,10 @@ def validate_one_epoch_with_mode(
 
     epoch_loss = running_loss / num_batches
     epoch_acc = running_corrects / total_samples
+    avg_iteration_time = sum(iteration_times) / len(iteration_times)
+
     print(
-        f"Val Epoch [{epoch + 1}/{num_epochs}] ({mode_str}) Loss: {epoch_loss:.4f}, Acc: {epoch_acc:.4f}"
+        f"Val Epoch [{epoch + 1}/{num_epochs}] ({mode_str}) Loss: {epoch_loss:.4f}, Acc: {epoch_acc:.4f}, Avg Iter Time: {avg_iteration_time:.3f}s"
     )
     return epoch_loss, epoch_acc
 
@@ -299,11 +327,14 @@ def test_model_with_mode(
     running_corrects = 0
     num_batches = 0
     total_samples = 0
+    iteration_times = []  # Track iteration times
 
     print(f"Testing model with mode: {mode_str}...")
     loop = tqdm(test_loader, desc=f"Testing ({mode_str})", leave=True)
 
     for images, labels in loop:
+        iteration_start_time = time.time()  # Start timing iteration
+
         images, labels = images.to(device), labels.to(device)
 
         outputs = model(images)
@@ -337,8 +368,17 @@ def test_model_with_mode(
         total_samples += labels.size(0)
         num_batches += 1
 
+        # Calculate iteration time
+        iteration_end_time = time.time()
+        iteration_time = iteration_end_time - iteration_start_time
+        iteration_times.append(iteration_time)
+
+        # Update tqdm bar with running loss, accuracy, and average iteration time
+        avg_iteration_time = sum(iteration_times) / len(iteration_times)
         loop.set_postfix(
-            loss=running_loss / num_batches, accuracy=running_corrects / total_samples
+            loss=running_loss / num_batches,
+            accuracy=running_corrects / total_samples,
+            avg_iter_time=f"{avg_iteration_time:.3f}s",
         )
 
         # Clear GPU memory cache after each batch
@@ -346,7 +386,11 @@ def test_model_with_mode(
 
     test_loss = running_loss / num_batches
     test_acc = running_corrects / total_samples
-    print(f"Test Results ({mode}) - Loss: {test_loss:.4f}, Accuracy: {test_acc:.4f}")
+    avg_iteration_time = sum(iteration_times) / len(iteration_times)
+
+    print(
+        f"Test Results ({mode}) - Loss: {test_loss:.4f}, Accuracy: {test_acc:.4f}, Avg Iter Time: {avg_iteration_time:.3f}s"
+    )
 
     return test_loss, test_acc
 
@@ -404,8 +448,11 @@ def train_one_epoch(
     running_corrects = 0
     num_batches = 0
     total_samples = 0
+    iteration_times = []  # Track iteration times
 
     for images, labels in loop:
+        iteration_start_time = time.time()  # Start timing iteration
+
         images, labels = images.to(device), labels.to(device)
 
         optimizer.zero_grad()
@@ -424,9 +471,17 @@ def train_one_epoch(
 
         num_batches += 1
 
-        # Update tqdm bar with running loss and accuracy
+        # Calculate iteration time
+        iteration_end_time = time.time()
+        iteration_time = iteration_end_time - iteration_start_time
+        iteration_times.append(iteration_time)
+
+        # Update tqdm bar with running loss, accuracy, and average iteration time
+        avg_iteration_time = sum(iteration_times) / len(iteration_times)
         loop.set_postfix(
-            loss=running_loss / num_batches, accuracy=running_corrects / total_samples
+            loss=running_loss / num_batches,
+            accuracy=running_corrects / total_samples,
+            avg_iter_time=f"{avg_iteration_time:.3f}s",
         )
 
         # Clear GPU memory cache after each batch
@@ -434,8 +489,10 @@ def train_one_epoch(
 
     epoch_loss = running_loss / num_batches
     epoch_acc = running_corrects / total_samples
+    avg_iteration_time = sum(iteration_times) / len(iteration_times)
+
     print(
-        f"Train Epoch [{epoch + 1}/{num_epochs}] Loss: {epoch_loss:.4f}, Acc: {epoch_acc:.4f}"
+        f"Train Epoch [{epoch + 1}/{num_epochs}] Loss: {epoch_loss:.4f}, Acc: {epoch_acc:.4f}, Avg Iter Time: {avg_iteration_time:.3f}s"
     )
     return epoch_loss, epoch_acc
 
@@ -447,9 +504,12 @@ def validate_one_epoch(model, val_loader, criterion, device, epoch, num_epochs):
     running_corrects = 0
     num_batches = 0
     total_samples = 0
+    iteration_times = []  # Track iteration times
 
     loop = tqdm(val_loader, desc=f"Val [{epoch + 1}/{num_epochs}]", leave=False)
     for images, labels in loop:
+        iteration_start_time = time.time()  # Start timing iteration
+
         images, labels = images.to(device), labels.to(device)
 
         outputs = model(images)
@@ -462,8 +522,17 @@ def validate_one_epoch(model, val_loader, criterion, device, epoch, num_epochs):
         total_samples += labels.size(0)
         num_batches += 1
 
+        # Calculate iteration time
+        iteration_end_time = time.time()
+        iteration_time = iteration_end_time - iteration_start_time
+        iteration_times.append(iteration_time)
+
+        # Update tqdm bar with running loss, accuracy, and average iteration time
+        avg_iteration_time = sum(iteration_times) / len(iteration_times)
         loop.set_postfix(
-            loss=running_loss / num_batches, accuracy=running_corrects / total_samples
+            loss=running_loss / num_batches,
+            accuracy=running_corrects / total_samples,
+            avg_iter_time=f"{avg_iteration_time:.3f}s",
         )
 
         # Clear GPU memory cache after each batch
@@ -471,8 +540,10 @@ def validate_one_epoch(model, val_loader, criterion, device, epoch, num_epochs):
 
     epoch_loss = running_loss / num_batches
     epoch_acc = running_corrects / total_samples
+    avg_iteration_time = sum(iteration_times) / len(iteration_times)
+
     print(
-        f"Val Epoch [{epoch + 1}/{num_epochs}] Loss: {epoch_loss:.4f}, Acc: {epoch_acc:.4f}"
+        f"Val Epoch [{epoch + 1}/{num_epochs}] Loss: {epoch_loss:.4f}, Acc: {epoch_acc:.4f}, Avg Iter Time: {avg_iteration_time:.3f}s"
     )
     return epoch_loss, epoch_acc
 
@@ -497,11 +568,14 @@ def test_model(model, test_loader, criterion, device):
     running_corrects = 0
     num_batches = 0
     total_samples = 0
+    iteration_times = []  # Track iteration times
 
     print("Testing model...")
     loop = tqdm(test_loader, desc="Testing", leave=True)
 
     for images, labels in loop:
+        iteration_start_time = time.time()  # Start timing iteration
+
         images, labels = images.to(device), labels.to(device)
 
         outputs = model(images)
@@ -514,8 +588,17 @@ def test_model(model, test_loader, criterion, device):
         total_samples += labels.size(0)
         num_batches += 1
 
+        # Calculate iteration time
+        iteration_end_time = time.time()
+        iteration_time = iteration_end_time - iteration_start_time
+        iteration_times.append(iteration_time)
+
+        # Update tqdm bar with running loss, accuracy, and average iteration time
+        avg_iteration_time = sum(iteration_times) / len(iteration_times)
         loop.set_postfix(
-            loss=running_loss / num_batches, accuracy=running_corrects / total_samples
+            loss=running_loss / num_batches,
+            accuracy=running_corrects / total_samples,
+            avg_iter_time=f"{avg_iteration_time:.3f}s",
         )
 
         # Clear GPU memory cache after each batch
@@ -523,7 +606,11 @@ def test_model(model, test_loader, criterion, device):
 
     test_loss = running_loss / num_batches
     test_acc = running_corrects / total_samples
-    print(f"Test Results - Loss: {test_loss:.4f}, Accuracy: {test_acc:.4f}")
+    avg_iteration_time = sum(iteration_times) / len(iteration_times)
+
+    print(
+        f"Test Results - Loss: {test_loss:.4f}, Accuracy: {test_acc:.4f}, Avg Iter Time: {avg_iteration_time:.3f}s"
+    )
 
     return test_loss, test_acc
 
@@ -599,7 +686,7 @@ class Trainer:
             "val_acc": [],
         }
 
-    def save_best_model(self, val_loss, val_acc,test_acc, epoch):
+    def save_best_model(self, val_loss, val_acc, test_acc, epoch):
         """Save model if it's the best so far."""
         is_best = val_acc > self.best_val_acc
 
