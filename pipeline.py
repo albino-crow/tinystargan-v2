@@ -608,7 +608,11 @@ class MultiplePipeline(nn.Module):
             )
         else:
             raise ValueError(f"Unknown conv_type: {conv_type}")
-
+        
+        
+        print("backbone parameters :",sum(p.numel() for p in feature_extractor.parameters()))
+        print("generator parameters :",sum(p.numel() for p in self.generator.parameters()))
+        print("pipeline parameters :",sum(p.numel() for p in self.parameters()))
     # ...existing code...
     def extract(self, x):
         with torch.no_grad():  # freeze backbone
