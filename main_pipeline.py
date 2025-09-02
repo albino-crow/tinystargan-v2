@@ -162,7 +162,7 @@ def main(args):
 
     # Create loss function based on number of labels
     criterion = nn.CrossEntropyLoss()
-    print("number of parameters:", sum(p.numel() for p in pipeline.parameters()))
+    print("number of parameters: ", sum(p.numel() for p in pipeline.parameters()))
     trainer = Trainer(
         model=pipeline,
         train_loader=train_loader,
