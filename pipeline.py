@@ -600,9 +600,10 @@ class MultiplePipeline(nn.Module):
                 xs.append(fake_images)
         else:
             for i in range(self.number_domain):
-                fake_images = self.generator.generate_with_style_code(
-                    x, self.style_codes_tensor[i]
+                style_code = (
+                    self.style_codes_tensor[i].unsqueeze(0).expand(x.size(0), -1)
                 )
+                fake_images = self.generator.generate_with_style_code(x, style_code)
                 fake_images = self.size_fixer(fake_images)
                 xs.append(fake_images)
 
