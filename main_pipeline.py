@@ -7,7 +7,7 @@ import torch.optim as optim
 from trainer import Trainer, create_data_loader
 from core.checkpoint import CheckpointIO
 from os.path import join as ospj
-
+from torch.ao.quantization import quantize_dynamic
 from pipeline import (
     MultiplePipeline,
     create_fixed_domain_style_codes,
@@ -15,6 +15,7 @@ from pipeline import (
     FlexibleClassifier,
     StarGanV2Generator,
 )
+# from torchao.quantization import quantize_, float8_weight_only
 
 
 def str2bool(v):
@@ -29,11 +30,46 @@ def str2bool(v):
         raise argparse.ArgumentTypeError(f"Boolean value expected, got: {v}")
 
 
+def apply_model_precision(model, precision, device):
+    """Apply the specified precision to the model."""
+    print(f"\nApplying {precision} precision to model...")
+
+    if precision == "float16":
+        model = model.half()
+        print("✓ Model converted to float16 (FP16)")
+
+    elif precision == "int8":
+        # Dynamic quantization for INT8
+        try:
+            # Set model to evaluation mode for quantization
+            model.eval()
+
+            # Apply dynamic quantization to linear and conv layers
+            model = quantize_dynamic(
+                model, {torch.nn.Linear, torch.nn.Conv2d}, dtype=torch.qint8
+            )
+            print("✓ Model quantized to INT8 using dynamic quantization")
+
+        except Exception as e:
+            print(f"⚠ INT8 quantization failed: {e}")
+            print("Falling back to float16...")
+            model = model.half()
+
+    elif precision == "float32":
+        model = model.float()
+        print("✓ Model kept in float32 (FP32)")
+
+    return model.to(device)
+
+
 def main(args):
+    print("Creating backbone model...")
     backbone = timm.create_model(
         "hf-hub:1aurent/vit_small_patch8_224.lunit_dino",
         pretrained=True,
     )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    backbone = backbone.to(device)
     generator = None
     style_codes = None
     print(
@@ -41,7 +77,7 @@ def main(args):
         "cuda" if torch.cuda.is_available() else "cpu",
         "<-----------------------------------",
     )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("setup:", print(" ".join(f"{k}={v}" for k, v in vars(args).items())))
     if args.mode == "forward" and args.loss_method != "normal":
         raise NotImplementedError("there is no such action available for this task")
     if args.mode == "star":
@@ -66,6 +102,16 @@ def main(args):
             nets_ema.mapping_network, args.num_domains, args.latent_dim, seed=args.seed
         )
         generator = StarGanV2Generator(nets_ema.generator)
+
+    # Handle backward compatibility and apply precision
+
+    # Print original model info for debugging
+    print("\nOriginal backbone model info:")
+    print(f"Type: {type(backbone.blocks[0].attn.qkv)}")
+    print(f"Weight dtype: {backbone.blocks[0].attn.qkv.weight.dtype}")
+    print(f"Weight shape: {backbone.blocks[0].attn.qkv.weight.shape}")
+
+    # Create pipeline first with original precision models
     pipeline = None
     if args.loss_method == "normal":
         pipeline = Pipeline(
@@ -97,12 +143,17 @@ def main(args):
             include_image=args.include_image,
             use_residual=args.use_residual,
             mode=args.loss_method,
+            precision=args.precision,
         )
+
+    # Move to device and apply precision once to the complete pipeline
     pipeline.to(device)
+    pipeline = apply_model_precision(pipeline, args.precision, device)
+
     loss_method = (
         args.loss_method
         if args.loss_method
-         in [
+        in [
             "average",
             "majority",
             "leastrisk",
@@ -128,6 +179,7 @@ def main(args):
 
     # Create loss function based on number of labels
     criterion = nn.CrossEntropyLoss()
+    print("number of parameters: ", sum(p.numel() for p in pipeline.parameters()))
     trainer = Trainer(
         model=pipeline,
         train_loader=train_loader,
@@ -142,6 +194,7 @@ def main(args):
         mode=loss_method,
         description=f"Training pipeline with {args.loss_method} loss, weight generator {args.generator_checkpoint_dir}, location of weight {args.checkpoint_dir}",
     )
+    
     trainer.train(num_epochs=args.total_epoch, resume_epoch=args.resume_iter)
 
 
@@ -316,6 +369,8 @@ if __name__ == "__main__":
             "attention_fr",
             "attention_bb",
             "fake_guide",
+            "attention_br",
+            "attention_m",
         ],
         help="This argument is used in trainer to choose the loss method",
     )
@@ -333,6 +388,14 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--include_image", type=str2bool, default=False, help="Enable fake guide"
+    )
+
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default="float32",
+        choices=["float32", "float16", "int8"],
+        help="Model precision: float32, float16, or int8",
     )
     parser.add_argument(
         "--use_residual",

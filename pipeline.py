@@ -398,21 +398,33 @@ class AttentionModule(nn.Module):
     Supports three different attention modes.
     """
 
-    def __init__(self, feature_dim, num_heads=8, dropout=0.1, use_residual=True):
+    def __init__(
+        self,
+        feature_dim,
+        num_heads=8,
+        dropout=0.1,
+        use_residual=True,
+        is_q_vector=True,
+    ):
         super().__init__()
         self.feature_dim = feature_dim
         self.num_heads = num_heads
         self.head_dim = feature_dim // num_heads
         self.use_residual = use_residual
+        self.is_q_vector = is_q_vector
 
         assert feature_dim % num_heads == 0, (
             "feature_dim must be divisible by num_heads"
         )
 
         # Linear transformations for Q, K, V
-        self.W_q = nn.Linear(feature_dim, feature_dim)
-        self.W_k = nn.Linear(feature_dim, feature_dim)
-        self.W_v = nn.Linear(feature_dim, feature_dim)
+        self.W_q = nn.Parameter(torch.randn(feature_dim, feature_dim))
+        self.W_k = nn.Parameter(torch.randn(feature_dim, feature_dim))
+        self.W_v = nn.Parameter(torch.randn(feature_dim, feature_dim))
+
+        nn.init.xavier_uniform_(self.W_q)
+        nn.init.xavier_uniform_(self.W_k)
+        nn.init.xavier_uniform_(self.W_v)
 
         # Output projection
         self.W_o = nn.Linear(feature_dim, feature_dim)
@@ -436,15 +448,30 @@ class AttentionModule(nn.Module):
         """
         batch_size = query_features.size(0)
 
+        if self.is_q_vector:
+            # Q is a vector: [batch_size, feature_dim] -> [batch_size, 1, feature_dim]
+            query_input = query_features.unsqueeze(1)
+            num_queries = 1
+        else:
+            # Q is already a matrix: [batch_size, num_queries, feature_dim]
+            query_input = query_features
+            num_queries = query_input.size(1)
+
         # Linear transformations
-        Q = self.W_q(query_features)  # [batch_size, feature_dim]
-        K = self.W_k(key_features)  # [batch_size, num_images, feature_dim]
-        V = self.W_v(value_features)  # [batch_size, num_images, feature_dim]
+        Q = torch.matmul(
+            query_input, self.W_q
+        )  # [batch_size, num_queries, feature_dim]
+        K = torch.matmul(
+            key_features, self.W_k
+        )  # [batch_size, num_images, feature_dim]
+        V = torch.matmul(
+            value_features, self.W_v
+        )  # [batch_size, num_images, feature_dim]
 
         # Reshape for multi-head attention
-        Q = Q.view(batch_size, 1, self.num_heads, self.head_dim).transpose(
+        Q = Q.view(batch_size, num_queries, self.num_heads, self.head_dim).transpose(
             1, 2
-        )  # [batch_size, num_heads, 1, head_dim]
+        )  # [batch_size, num_heads, num_queries, head_dim]
         K = K.view(batch_size, -1, self.num_heads, self.head_dim).transpose(
             1, 2
         )  # [batch_size, num_heads, num_images, head_dim]
@@ -453,26 +480,37 @@ class AttentionModule(nn.Module):
         )  # [batch_size, num_heads, num_images, head_dim]
 
         # Scaled dot-product attention
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / (
-            self.head_dim**0.5
-        )  # [batch_size, num_heads, 1, num_images]
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim**0.5)
         attention_weights = F.softmax(scores, dim=-1)
         attention_weights = self.dropout(attention_weights)
 
         # Apply attention to values
-        attended = torch.matmul(
-            attention_weights, V
-        )  # [batch_size, num_heads, 1, head_dim]
+        attended = torch.matmul(attention_weights, V)
 
-        # Concatenate heads and project
-        attended = (
-            attended.transpose(1, 2).contiguous().view(batch_size, self.feature_dim)
-        )  # [batch_size, feature_dim]
-        output = self.W_o(attended)
-
-        # Optional residual connection and layer norm
-        if self.use_residual:
-            output = self.layer_norm(output + query_features)
+        if self.is_q_vector:
+            # For vector queries, average across the attention dimension
+            attended = attended.mean(dim=2)  # [batch_size, num_heads, head_dim]
+            # Concatenate heads and project
+            attended = (
+                attended.transpose(1, 2).contiguous().view(batch_size, self.feature_dim)
+            )
+            output = self.W_o(attended)
+            # Optional residual connection and layer norm
+            if self.use_residual:
+                output = self.layer_norm(output + query_features)
+        else:
+            # Keep the matrix structure: [batch_size, num_heads, num_queries, head_dim]
+            attended = (
+                attended.transpose(1, 2)
+                .contiguous()
+                .view(batch_size, num_queries, self.feature_dim)
+            )
+            output = self.W_o(attended)
+            # For matrix: apply layer norm and residual first, then average
+            if self.use_residual:
+                output = self.layer_norm(output + query_features)
+            # Then average to get vector output
+            output = output.mean(dim=1)  # [batch_size, feature_dim]
 
         return output
 
@@ -492,6 +530,7 @@ class MultiplePipeline(nn.Module):
         number_convex=5,
         include_image=True,
         use_residual=True,
+        precision="float32",
         mode=None,  # New parameter to control output format
     ):
         super().__init__()
@@ -505,8 +544,8 @@ class MultiplePipeline(nn.Module):
         self.classifier = OneLayerClassifier(
             input_dim=feature_extractor_embedding, num_classes=number_label
         )
+        self.precision = precision
         self.mode = mode  # 'ensemble', 'vector_ensemble', 'matrix_ensemble', or None
-
         # For vector_ensemble: learnable weights for each logit vector
         if self.mode in ["vector_ensemble", "affine_vector_ensemble"]:
             print(f"++++++++++{self.mode}+++++++++++++++")
@@ -527,6 +566,7 @@ class MultiplePipeline(nn.Module):
                 feature_dim=feature_extractor_embedding,
                 num_heads=8,
                 use_residual=use_residual,
+                is_q_vector=self.mode not in ["attention_m"],
             )
         elif "fake_guide" == self.mode:
             print(f"++++++++++{self.mode}+++++++++++++++")
@@ -569,6 +609,16 @@ class MultiplePipeline(nn.Module):
         else:
             raise ValueError(f"Unknown conv_type: {conv_type}")
 
+        print(
+            "backbone parameters :",
+            sum(p.numel() for p in feature_extractor.parameters()),
+        )
+        print(
+            "generator parameters :",
+            sum(p.numel() for p in self.generator.parameters()),
+        )
+        print("pipeline parameters :", sum(p.numel() for p in self.parameters()))
+
     # ...existing code...
     def extract(self, x):
         with torch.no_grad():  # freeze backbone
@@ -584,6 +634,8 @@ class MultiplePipeline(nn.Module):
         # Extract domain weights from input image
 
         # Store all generated images
+        # Apply input precision (INT8 models still need float inputs)
+
         xs = []
 
         if self.all_domain is False:
@@ -673,6 +725,26 @@ class MultiplePipeline(nn.Module):
                     query_features=query_logits,
                     key_features=all_features_stack,
                     value_features=all_features_stack,
+                )
+            elif self.mode == "attention_br":
+                # Mode 4: Real image as query, both fake and real as key, real as value
+                all_features_stack = torch.cat(
+                    [fake_features_stack, query_logits.unsqueeze(1)], dim=1
+                )
+                real_features_stack = query_logits.unsqueeze(
+                    1
+                )  # [batch_size, 1, feature_dim]
+                attended_features = self.attention_module(
+                    query_features=query_logits,
+                    key_features=all_features_stack,
+                    value_features=real_features_stack,
+                )
+            elif self.mode == "attention_m":
+                # Mode 5: fake image as query and key, fake images as value
+                attended_features = self.attention_module(
+                    query_features=fake_features_stack,
+                    key_features=fake_features_stack,
+                    value_features=fake_features_stack,
                 )
             return self.classifier(attended_features)
 
