@@ -195,16 +195,17 @@ class BlindDomainPredictor(nn.Module):
     to produce convex output (non-negative values that sum to 1).
     """
 
-    def __init__(self, number_domain):
+    def __init__(self, number_domain, temperature=1.0):
         super().__init__()
         self.number_domain = number_domain
+        self.temperature = temperature
 
         # Learnable parameters initialized randomly
         # These will be optimized through backpropagation
         self.domain_weights = nn.Parameter(torch.randn(number_domain))
 
     def get_domain_weight(self):
-        softmax = F.softmax(self.domain_weights, dim=0)
+        softmax = F.softmax(self.domain_weights / self.temperature, dim=0)
         raw_formatted = [f"{val.item():.4f}" for val in self.domain_weights]
         softmax_formatted = [f"{val.item():.4f}" for val in softmax]
         return f"raw:[{', '.join(raw_formatted)}]--softmax:[{', '.join(softmax_formatted)}]"
@@ -222,7 +223,7 @@ class BlindDomainPredictor(nn.Module):
             - Each row sums to 1 (convex combination)
         """
         # Apply softmax to ensure convex output (non-negative, sum=1)
-        domain_weights = F.softmax(self.domain_weights, dim=0)
+        domain_weights = F.softmax(self.domain_weights / self.temperature, dim=0)
 
         # Expand to match batch size if input is provided
         if x is not None:
@@ -270,6 +271,66 @@ class ConvexDomainPredictor(nn.Module):
         domain_weights = F.softmax(pooled, dim=1)
 
         return domain_weights
+
+
+class MultiOneHotConvexPredictor(nn.Module):
+    """
+    Returns a list of one-hot vectors based on top-k highest softmax values.
+    Each one-hot vector represents the 1st, 2nd, 3rd, ... highest values separately.
+    """
+
+    def __init__(self, number_convex, number_domain, input_channels=3):
+        super().__init__()
+        self.number_convex = number_convex
+        self.number_domain = number_domain
+
+        # Simple single convolutional layer followed by global average pooling
+        self.conv_layer = nn.Conv2d(input_channels, number_domain, kernel_size=1)
+
+    def forward(self, x):
+        """
+        Forward pass that returns a list of one-hot encoded outputs
+
+        Args:
+            x: Input image tensor [batch_size, channels, height, width]
+
+        Returns:
+            List of one-hot tensors, each [batch_size, number_domain] where:
+            - List length is number_convex
+            - Each tensor has exactly one 1.0 per row and rest are 0.0
+            - 1st tensor: one-hot for highest softmax value
+            - 2nd tensor: one-hot for 2nd highest softmax value
+            - 3rd tensor: one-hot for 3rd highest softmax value
+            - etc.
+        """
+        # Pass through single conv layer: [batch_size, number_domain, height, width]
+        conv_out = self.conv_layer(x)
+
+        # Global average pooling to get [batch_size, number_domain]
+        pooled = F.adaptive_avg_pool2d(conv_out, (1, 1)).squeeze(-1).squeeze(-1)
+
+        # Apply softmax to get probability distribution
+        softmax_weights = F.softmax(pooled, dim=1)  # [batch_size, number_domain]
+
+        # Get top-k indices (k = number_convex) for each batch item
+        # topk returns (values, indices) where indices are sorted in descending order
+        _, top_k_indices = torch.topk(softmax_weights, k=self.number_convex, dim=1)
+        # top_k_indices shape: [batch_size, number_convex]
+
+        # Create list of one-hot vectors
+        one_hot_list = []
+        batch_size = x.size(0)
+
+        for i in range(self.number_convex):
+            # Create one-hot for i-th highest value
+            one_hot = torch.zeros(batch_size, self.number_domain, device=x.device)
+            # Get indices for i-th highest values across all batch items
+            indices_for_rank_i = top_k_indices[:, i]  # [batch_size]
+            # Set corresponding positions to 1.0
+            one_hot.scatter_(1, indices_for_rank_i.unsqueeze(1), 1.0)
+            one_hot_list.append(one_hot)
+
+        return one_hot_list
 
 
 class LinearDomainPredictor(nn.Module):
@@ -604,7 +665,7 @@ class MultiplePipeline(nn.Module):
         # and register as buffer so it moves with the model to different devices
         style_codes_tensor = torch.stack([style_codes[i] for i in range(number_domain)])
         self.register_buffer("style_codes_tensor", style_codes_tensor)
-
+        self.conv_type = conv_type
         # Create convex models that output domain weights (non-negative, sum=1)
         if conv_type == "conv":
             self.convex_models = nn.ModuleList(
@@ -616,8 +677,18 @@ class MultiplePipeline(nn.Module):
             )
         elif conv_type == "blind":
             self.convex_models = nn.ModuleList(
-                [BlindDomainPredictor(number_domain) for _ in range(number_convex)]
+                [
+                    BlindDomainPredictor(number_domain, temperature=0.5)
+                    for _ in range(number_convex)
+                ]
             )
+        elif conv_type == "one_hot":
+            self.convex_models = MultiOneHotConvexPredictor(
+                number_convex, number_domain
+            )
+            # Counter to track which domains are selected (no gradients)
+            self.register_buffer("count_each_one", torch.zeros(number_domain))
+
         else:
             raise ValueError(f"Unknown conv_type: {conv_type}")
 
@@ -645,6 +716,21 @@ class MultiplePipeline(nn.Module):
             output.append(
                 "\n".join([model.get_domain_weight() for model in self.convex_models])
             )
+        elif self.conv_type == "one_hot":
+            # Show domain selection statistics
+            total_selections = self.count_each_one.sum()
+            if total_selections > 0:
+                percentages = self.count_each_one / total_selections * 100
+                counts_formatted = [f"{val.item():.0f}" for val in self.count_each_one]
+                percentages_formatted = [f"{val.item():.2f}%" for val in percentages]
+                output.append(
+                    f"Domain selection counts: [{', '.join(counts_formatted)}]"
+                )
+                output.append(
+                    f"Domain selection percentages: [{', '.join(percentages_formatted)}]"
+                )
+            else:
+                output.append("Domain selection counts: [No selections yet]")
 
         return output
 
@@ -674,9 +760,10 @@ class MultiplePipeline(nn.Module):
             os.makedirs(save_dir, exist_ok=True)
 
             # Get batch size
-            batch_size = real_image.size(0)
 
             # Randomly select one index from the batch
+            batch_size = real_image.size(0)
+
             selected_idx = random.randint(0, batch_size - 1)
 
             # Save real image as {counter}_0.png
@@ -714,17 +801,39 @@ class MultiplePipeline(nn.Module):
         xs = []
 
         if self.all_domain is False:
-            for model in self.convex_models:
-                domain_weights = model(x)
-                weighted_style_code = torch.matmul(
-                    domain_weights, self.style_codes_tensor
-                )
+            if self.conv_type == "one_hot":
+                # For one_hot type, get list of one-hot vectors directly
+                domain_weights_list = self.convex_models(
+                    x
+                )  # Returns list of [batch_size, number_domain]
+                for i, domain_weights in enumerate(domain_weights_list):
+                    ## here i want add domain weight with count_each_one , note domain weight is one hot:
+                    # Accumulate one-hot selections: sum across batch dimension to count domain selections
+                    self.count_each_one += domain_weights.sum(
+                        dim=0
+                    )  # [batch_size, number_domain] -> [number_domain]
 
-                fake_images = self.generator.generate_with_style_code(
-                    x, weighted_style_code
-                )
-                fake_images = self.size_fixer(fake_images)
-                xs.append(fake_images)
+                    weighted_style_code = torch.matmul(
+                        domain_weights, self.style_codes_tensor
+                    )
+                    fake_images = self.generator.generate_with_style_code(
+                        x, weighted_style_code
+                    )
+                    fake_images = self.size_fixer(fake_images)
+                    xs.append(fake_images)
+            else:
+                # For other types, iterate through individual models
+                for model in self.convex_models:
+                    domain_weights = model(x)
+                    weighted_style_code = torch.matmul(
+                        domain_weights, self.style_codes_tensor
+                    )
+                    fake_images = self.generator.generate_with_style_code(
+                        x, weighted_style_code
+                    )
+                    fake_images = self.size_fixer(fake_images)
+                    xs.append(fake_images)
+
             if 0.1 < random.random():
                 self.save_images(x, xs)
         else:

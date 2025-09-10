@@ -59,7 +59,6 @@ def apply_model_precision(model, precision, device):
             model = model.half()
 
     elif precision == "float32":
-        model = model.float()
         print("✓ Model kept in float32 (FP32)")
 
     # Calculate number of parameters and memory usage
