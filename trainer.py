@@ -839,6 +839,23 @@ class Trainer:
             print(
                 f"Best Val Acc so far: {self.best_val_acc:.4f}, respected test Acc: {self.test_with_best_val:.4f} (Epoch {self.best_epoch})"
             )
+            meta_data = self.model.get_meta_data()
+
+            # Save meta_data if not empty
+            if meta_data:  # Check if meta_data is not empty
+                meta_data_path = os.path.join(
+                    self.checkpoint_dir, f"meta_data_{epoch + 1}.txt"
+                )
+                try:
+                    with open(meta_data_path, "w") as f:
+                        if isinstance(meta_data, (list, tuple)):
+                            for item in meta_data:
+                                f.write(str(item) + "\n")
+                        else:
+                            f.write(str(meta_data))
+                    print(f"Meta data saved to {meta_data_path}")
+                except Exception as e:
+                    print(f"Failed to save meta data: {e}")
 
         # Save final model
         self.save_current_model(num_epochs)

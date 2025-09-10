@@ -15,6 +15,9 @@ from pipeline import (
     FlexibleClassifier,
     StarGanV2Generator,
 )
+from huggingface_hub import hf_hub_download
+from PathDino import get_pathDino_model
+
 # from torchao.quantization import quantize_, float8_weight_only
 
 
@@ -59,15 +62,34 @@ def apply_model_precision(model, precision, device):
         model = model.float()
         print("✓ Model kept in float32 (FP32)")
 
+    # Calculate number of parameters and memory usage
+    num_params = sum(p.numel() for p in model.parameters())
+    param_size_mb = sum(p.numel() * p.element_size() for p in model.parameters())
+    print(f"number of model parameters: {num_params:,}")
+    print(f"model weight size: {param_size_mb:.2f} B")
+
     return model.to(device)
 
 
 def main(args):
     print("Creating backbone model...")
-    backbone = timm.create_model(
-        "hf-hub:1aurent/vit_small_patch8_224.lunit_dino",
-        pretrained=True,
-    )
+
+    if args.model == "Lunit":
+        backbone = timm.create_model(
+            "hf-hub:1aurent/vit_small_patch8_224.lunit_dino",
+            pretrained=True,
+        )
+    else:
+        filename = "PathDino512.pth"
+        repo_id = "Saghir/PathDino"
+        model_path = hf_hub_download(
+            repo_id=repo_id,
+            repo_type="space",  # Important: specify that it's a Space
+            filename=filename,
+        )
+        # Load the PathDino model using the proper function
+        backbone, _ = get_pathDino_model(model_path)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     backbone = backbone.to(device)
     generator = None
@@ -110,9 +132,10 @@ def main(args):
     print(f"Type: {type(backbone.blocks[0].attn.qkv)}")
     print(f"Weight dtype: {backbone.blocks[0].attn.qkv.weight.dtype}")
     print(f"Weight shape: {backbone.blocks[0].attn.qkv.weight.shape}")
-
+    
     # Create pipeline first with original precision models
     pipeline = None
+    backbone_img_size = 224 if args.model == "Lunit" else 512
     if args.loss_method == "normal":
         pipeline = Pipeline(
             generator=generator,
@@ -120,7 +143,7 @@ def main(args):
             number_domain=args.num_domains,
             feature_extractor=FlexibleClassifier(backbone, num_classes=args.num_labels),
             fast_forward=(args.mode == "forward"),
-            backbone_input_size=args.backbone_img_size,
+            backbone_input_size=backbone_img_size,
             mix_up=args.mix_up,
             mix_up_start=args.mix_up_start,
             mix_up_end=args.mix_up_end,
@@ -136,7 +159,7 @@ def main(args):
             feature_extractor=backbone,
             feature_extractor_embedding=384,
             number_label=args.num_labels,
-            backbone_input_size=args.backbone_img_size,
+            backbone_input_size=backbone_img_size,
             conv_type=args.convex_type,
             all_domain=args.all_domain,
             number_convex=args.number_convex,
@@ -144,6 +167,7 @@ def main(args):
             use_residual=args.use_residual,
             mode=args.loss_method,
             precision=args.precision,
+            save_image_dir=args.checkpoint_dir,
         )
 
     # Move to device and apply precision once to the complete pipeline
@@ -194,7 +218,7 @@ def main(args):
         mode=loss_method,
         description=f"Training pipeline with {args.loss_method} loss, weight generator {args.generator_checkpoint_dir}, location of weight {args.checkpoint_dir}",
     )
-    
+
     trainer.train(num_epochs=args.total_epoch, resume_epoch=args.resume_iter)
 
 
@@ -203,9 +227,7 @@ if __name__ == "__main__":
 
     # model arguments
     parser.add_argument("--img_size", type=int, default=256, help="Image resolution")
-    parser.add_argument(
-        "--backbone_img_size", type=int, default=256, help="Image resolution"
-    )
+
     parser.add_argument("--num_domains", type=int, default=2, help="Number of domains")
     parser.add_argument("--num_labels", type=int, default=2, help="Number of labels")
 
@@ -396,6 +418,14 @@ if __name__ == "__main__":
         default="float32",
         choices=["float32", "float16", "int8"],
         help="Model precision: float32, float16, or int8",
+    )
+
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="Path",
+        choices=["Path", "Lunit"],
+        help="Model type: path or lunit",
     )
     parser.add_argument(
         "--use_residual",

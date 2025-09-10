@@ -3,10 +3,13 @@ StarGAN v2 Generator
 Simple class for generating fake images using StarGAN v2.
 """
 
+import os
+import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import transforms
+from torchvision.utils import save_image
 from core.model import build_model
 
 from core.checkpoint import CheckpointIO
@@ -199,6 +202,12 @@ class BlindDomainPredictor(nn.Module):
         # Learnable parameters initialized randomly
         # These will be optimized through backpropagation
         self.domain_weights = nn.Parameter(torch.randn(number_domain))
+
+    def get_domain_weight(self):
+        softmax = F.softmax(self.domain_weights, dim=0)
+        raw_formatted = [f"{val.item():.4f}" for val in self.domain_weights]
+        softmax_formatted = [f"{val.item():.4f}" for val in softmax]
+        return f"raw:[{', '.join(raw_formatted)}]--softmax:[{', '.join(softmax_formatted)}]"
 
     def forward(self, x=None):
         """
@@ -524,6 +533,7 @@ class MultiplePipeline(nn.Module):
         feature_extractor,
         feature_extractor_embedding,
         backbone_input_size,
+        save_image_dir: str,
         conv_type="linear",
         number_label=2,
         all_domain=False,
@@ -534,6 +544,8 @@ class MultiplePipeline(nn.Module):
         mode=None,  # New parameter to control output format
     ):
         super().__init__()
+        self.save_image_dir = save_image_dir
+        self.count = 0
         self.generator = generator
         self.number_domain = number_domain
         self.include_image = include_image
@@ -620,6 +632,22 @@ class MultiplePipeline(nn.Module):
         print("pipeline parameters :", sum(p.numel() for p in self.parameters()))
 
     # ...existing code...
+
+    def get_meta_data(self):
+        output = [
+            f"model: {self.feature_extractor.__class__.__name__}",
+            f"all_domain : {self.all_domain}",
+            f"conv_type: {self.conv_type}",
+            f"number_domain: {self.number_domain}",
+            f"mode : {self.mode}",
+        ]
+        if self.conv_type == "blind":
+            output.append(
+                "\n".join([model.get_domain_weight() for model in self.convex_models])
+            )
+
+        return output
+
     def extract(self, x):
         with torch.no_grad():  # freeze backbone
             return self.feature_extractor(x)
@@ -629,6 +657,53 @@ class MultiplePipeline(nn.Module):
             if self.backbone_input_size != x.size(2):
                 x = self.resize_transform(x)
         return x
+
+    def save_images(self, real_image, fake_images):
+        """
+        Save randomly selected real and fake images from batch.
+        Only saves when gradients are disabled (evaluation mode).
+
+        Args:
+            real_image: Batch of real images [batch_size, C, H, W]
+            fake_images: List of batches of fake images, each [batch_size, C, H, W]
+        """
+        # Only save images when gradients are disabled
+        if not torch.is_grad_enabled():
+            # Create save directory if it doesn't exist
+            save_dir = os.path.join(self.save_image_dir, "my_samples")
+            os.makedirs(save_dir, exist_ok=True)
+
+            # Get batch size
+            batch_size = real_image.size(0)
+
+            # Randomly select one index from the batch
+            selected_idx = random.randint(0, batch_size - 1)
+
+            # Save real image as {counter}_0.png
+            real_img_to_save = real_image[selected_idx].unsqueeze(
+                0
+            )  # Add batch dimension back
+            save_image(
+                real_img_to_save,
+                os.path.join(save_dir, f"{self.count}_0.png"),
+                normalize=True,
+                value_range=(-1, 1),
+            )
+
+            # Save each fake image as {counter}_{di}.png where di goes from 1 to number of fake images
+            for di, fake_batch in enumerate(fake_images, start=1):
+                fake_img_to_save = fake_batch[selected_idx].unsqueeze(
+                    0
+                )  # Add batch dimension back
+                save_image(
+                    fake_img_to_save,
+                    os.path.join(save_dir, f"{self.count}_{di}.png"),
+                    normalize=True,
+                    value_range=(0, 1),
+                )
+
+            # Increment counter
+            self.count += 1
 
     def forward(self, x):
         # Extract domain weights from input image
@@ -650,11 +725,19 @@ class MultiplePipeline(nn.Module):
                 )
                 fake_images = self.size_fixer(fake_images)
                 xs.append(fake_images)
+            if 0.1 < random.random():
+                self.save_images(x, xs)
         else:
             for i in range(self.number_domain):
-                fake_images = self.generator.generate_with_style_code(
-                    x, self.style_codes_tensor[i]
+                # Expand style code to match batch size [batch_size, style_dim]
+                batch_size = x.size(0)
+                style_code = (
+                    self.style_codes_tensor[i]
+                    .unsqueeze(0)
+                    .expand(batch_size, -1)
+                    .contiguous()
                 )
+                fake_images = self.generator.generate_with_style_code(x, style_code)
                 fake_images = self.size_fixer(fake_images)
                 xs.append(fake_images)
 
@@ -838,6 +921,10 @@ class Pipeline(nn.Module):
             self.register_buffer("style_codes_tensor", style_codes_tensor)
         else:
             self.register_buffer("style_codes_tensor", None)
+
+    def get_meta_data(self):
+        print("nothing to save")
+        return []
 
     def size_fixer(self, x):
         if self.resize_transform is not None:
