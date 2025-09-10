@@ -312,23 +312,41 @@ class MultiOneHotConvexPredictor(nn.Module):
         # Apply softmax to get probability distribution
         softmax_weights = F.softmax(pooled, dim=1)  # [batch_size, number_domain]
 
-        # Get top-k indices (k = number_convex) for each batch item
-        # topk returns (values, indices) where indices are sorted in descending order
-        _, top_k_indices = torch.topk(softmax_weights, k=self.number_convex, dim=1)
-        # top_k_indices shape: [batch_size, number_convex]
+        if self.training:
+            # During training: Use Gumbel-Softmax with sequential masking to match evaluation top-k
+            temperature = 1.0
+            one_hot_list = []
+            remaining_logits = pooled.clone()  # Start with original logits
 
-        # Create list of one-hot vectors
-        one_hot_list = []
-        batch_size = x.size(0)
+            for i in range(self.number_convex):
+                # Gumbel-Softmax on remaining (non-masked) logits
+                gumbel_softmax = F.gumbel_softmax(
+                    remaining_logits, tau=temperature, hard=True, dim=1
+                )
+                one_hot_list.append(gumbel_softmax)
 
-        for i in range(self.number_convex):
-            # Create one-hot for i-th highest value
-            one_hot = torch.zeros(batch_size, self.number_domain, device=x.device)
-            # Get indices for i-th highest values across all batch items
-            indices_for_rank_i = top_k_indices[:, i]  # [batch_size]
-            # Set corresponding positions to 1.0
-            one_hot.scatter_(1, indices_for_rank_i.unsqueeze(1), 1.0)
-            one_hot_list.append(one_hot)
+                # Mask out the selected positions for next iteration
+                # Set selected positions to very negative values so they won't be selected again
+                selected_mask = gumbel_softmax.bool()  # [batch_size, number_domain]
+                remaining_logits = remaining_logits.masked_fill(selected_mask, -1e9)
+
+        else:
+            # During evaluation: Use true one-hot based on top-k
+            # Get top-k indices (k = number_convex) for each batch item
+            _, top_k_indices = torch.topk(softmax_weights, k=self.number_convex, dim=1)
+
+            # Create list of one-hot vectors
+            one_hot_list = []
+            batch_size = x.size(0)
+
+            for i in range(self.number_convex):
+                # Create one-hot for i-th highest value
+                one_hot = torch.zeros(batch_size, self.number_domain, device=x.device)
+                # Get indices for i-th highest values across all batch items
+                indices_for_rank_i = top_k_indices[:, i]  # [batch_size]
+                # Set corresponding positions to 1.0
+                one_hot.scatter_(1, indices_for_rank_i.unsqueeze(1), 1.0)
+                one_hot_list.append(one_hot)
 
         return one_hot_list
 

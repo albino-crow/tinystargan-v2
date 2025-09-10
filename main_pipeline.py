@@ -131,7 +131,7 @@ def main(args):
     print(f"Type: {type(backbone.blocks[0].attn.qkv)}")
     print(f"Weight dtype: {backbone.blocks[0].attn.qkv.weight.dtype}")
     print(f"Weight shape: {backbone.blocks[0].attn.qkv.weight.shape}")
-    
+
     # Create pipeline first with original precision models
     pipeline = None
     backbone_img_size = 224 if args.model == "Lunit" else 512
@@ -399,8 +399,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--convex_type",
         type=str,
-        default="blind",
-        choices=["blind", "linear", "conv"],
+        default="one_hot",
+        choices=["blind", "linear", "conv", "one_hot"],
         help="This argument is used in pipeline to find best combination of domains",
     )
 
