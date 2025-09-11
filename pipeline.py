@@ -284,30 +284,43 @@ class MultiOneHotConvexPredictor(nn.Module):
         self.number_convex = number_convex
         self.number_domain = number_domain
 
-        # Simple single convolutional layer followed by global average pooling
-        self.conv_layer = nn.Conv2d(input_channels, number_domain, kernel_size=1)
+        # Multi-scale convolutions in first layer (like ColorStyleExtractor)
+        self.conv_3x3 = nn.Conv2d(input_channels, 12, kernel_size=3, padding=1)
+        self.conv_1x1 = nn.Conv2d(input_channels, 12, kernel_size=1, padding=0)
+        self.conv_5x5 = nn.Conv2d(input_channels, 12, kernel_size=5, padding=2)
+        # Total: 12 + 12 + 12 = 36 channels
+
+        self.conv1 = nn.Conv2d(36, 36, kernel_size=1)
+        self.conv2 = nn.Conv2d(36, number_domain, kernel_size=1)
+
+        # Batch normalization layers
+        self.bn_3x3 = nn.BatchNorm2d(12)
+        self.bn_1x1 = nn.BatchNorm2d(12)
+        self.bn_5x5 = nn.BatchNorm2d(12)
+        self.bn1 = nn.BatchNorm2d(36)
+        self.bn3 = nn.BatchNorm2d(number_domain)
+
+        # Add attention for better feature selection (optional, like ColorStyleExtractor)
+        self.attention = nn.Conv2d(number_domain, 1, kernel_size=1)
 
     def forward(self, x):
-        """
-        Forward pass that returns a list of one-hot encoded outputs
+        # Multi-scale feature extraction in parallel
+        feat_3x3 = F.relu(self.bn_3x3(self.conv_3x3(x)))  # [N, 12, H, W]
+        feat_1x1 = F.relu(self.bn_1x1(self.conv_1x1(x)))  # [N, 12, H, W]
+        feat_5x5 = F.relu(self.bn_5x5(self.conv_5x5(x)))  # [N, 12, H, W]
 
-        Args:
-            x: Input image tensor [batch_size, channels, height, width]
+        # Concatenate all features: 12 + 12 + 12 = 36 channels
+        x = torch.cat([feat_3x3, feat_1x1, feat_5x5], dim=1)  # [N, 36, H, W]
 
-        Returns:
-            List of one-hot tensors, each [batch_size, number_domain] where:
-            - List length is number_convex
-            - Each tensor has exactly one 1.0 per row and rest are 0.0
-            - 1st tensor: one-hot for highest softmax value
-            - 2nd tensor: one-hot for 2nd highest softmax value
-            - 3rd tensor: one-hot for 3rd highest softmax value
-            - etc.
-        """
-        # Pass through single conv layer: [batch_size, number_domain, height, width]
-        conv_out = self.conv_layer(x)
+        x = F.relu(self.bn1(self.conv1(x)))  # [N, 36, H, W] -> [N, 36, H, W]
+        x = self.bn3(self.conv2(x))  # [N, 36, H, W] -> [N, number_domain, H, W]
 
-        # Global average pooling to get [batch_size, number_domain]
-        pooled = F.adaptive_avg_pool2d(conv_out, (1, 1)).squeeze(-1).squeeze(-1)
+        # Apply attention weighting
+        attention = torch.sigmoid(self.attention(x))
+        x = x * attention
+
+        # Pooling to get [batch_size, number_domain]
+        pooled = F.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1)
 
         # Apply softmax to get probability distribution
         softmax_weights = F.softmax(pooled, dim=1)  # [batch_size, number_domain]

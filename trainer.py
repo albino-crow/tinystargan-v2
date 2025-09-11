@@ -814,17 +814,16 @@ class Trainer:
             # Training phase
             train_loss, train_acc = self.train_epoch(epoch, num_epochs)
 
-            # Validation phase
-            val_loss, val_acc = self.validate_epoch(epoch, num_epochs)
-            test_loss, test_acc = self.test()
-            
+            # Get and save meta_data after training
             meta_data = self.model.get_meta_data()
 
-            # Save meta_data if not empty
-            if meta_data:  # Check if meta_data is not empty
+            # Save meta_data if it exists (check for None, not empty)
+            if meta_data is not None:
                 meta_data_path = os.path.join(
                     self.checkpoint_dir, f"meta_data_{epoch + 1}.txt"
                 )
+                # Get absolute path to show exactly where the file is saved
+                absolute_meta_data_path = os.path.abspath(meta_data_path)
                 try:
                     with open(meta_data_path, "w") as f:
                         if isinstance(meta_data, (list, tuple)):
@@ -832,9 +831,17 @@ class Trainer:
                                 f.write(str(item) + "\n")
                         else:
                             f.write(str(meta_data))
-                    print(f"Meta data saved to {meta_data_path}")
+                    print(f"Meta data saved to: {absolute_meta_data_path}")
+                    print(
+                        f"Checkpoint directory: {os.path.abspath(self.checkpoint_dir)}"
+                    )
                 except Exception as e:
                     print(f"Failed to save meta data: {e}")
+                    print(f"Attempted path was: {absolute_meta_data_path}")
+
+            # Validation phase
+            val_loss, val_acc = self.validate_epoch(epoch, num_epochs)
+            test_loss, test_acc = self.test()
 
             # Update history
             self.train_history["train_loss"].append(train_loss)
@@ -857,7 +864,6 @@ class Trainer:
             print(
                 f"Best Val Acc so far: {self.best_val_acc:.4f}, respected test Acc: {self.test_with_best_val:.4f} (Epoch {self.best_epoch})"
             )
-            
 
         # Save final model
         self.save_current_model(num_epochs)
